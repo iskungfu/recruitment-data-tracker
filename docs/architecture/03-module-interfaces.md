@@ -1,7 +1,7 @@
 # 模块接口定义
 
-> 版本：v1.0 | 日期：2026-09-22 | 对应架构概览 §2 各模块
-> 本文档是 Week 1-5 各阶段代码实现的契约基线，研发工程师可直接对照编写。
+> 版本：v1.1 | 日期：2026-09-23 | 对应架构概览 v1.1
+> v1.1 变更：采集层从 ABC 基类 API scraper 切换为 subprocess CLI wrapper + JSON importer
 
 ---
 
@@ -219,67 +219,157 @@ def get_direction_stats_for_quarter(
 
 ---
 
-## 6. `collectors/base.py` — 采集器抽象基类
+## 6. `collectors/boss_scraper.py` — boss-zhipin-scraper CLI wrapper
 
 ```python
-from abc import ABC, abstractmethod
+from __future__ import annotations
+import subprocess, json, shutil
+from pathlib import Path
+from dataclasses import dataclass
+from core.config import Settings
+from core.exceptions import ScraperError, ScraperTimeoutError
 
-class CollectorBase(ABC):
-    """所有平台采集器的统一接口"""
 
-    platform: str = ""  # 子类必填，如 "BOSS"
+# ================================================================
+# boss-zhipin-scraper 是外部 CLI，不是我们的代码。
+# 我们的代码只做：① 组装参数 ② 调 subprocess ③ 解析 JSON 输出。
+# ================================================================
 
-    def __init__(self, config: Settings, logger: Logger):
-        self.config = config
-        self.logger = logger
+@dataclass(frozen=True)
+class ScraperConfig:
+    """单次采集的参数 (scraper CLI flags)"""
+    keyword: str
+    city: str                            # boss-zhipin-scraper 城市名（如"北京"）
+    max_pages: int = 3                   # ≤3 页/关键词/城市（ADR-011）
+    timeout: int = 300                   # 子进程超时 300 秒
+    output_dir: Path = Path("data/raw")  # JSON 落盘目录
 
-    @abstractmethod
-    def fetch_page(self, keyword: str, city: City, page: int) -> list[dict]:
-        """
-        抓取一页原始数据（不解析）。
-        失败抛 FetchError（网络） 或 AntiCrawlError（被封）。
-        必须实现：12-22 秒随机延迟、UA 轮换、Cookie 注入。
-        """
 
-    @abstractmethod
-    def parse_page(self, raw: list[dict], city: City, snapshot_date: date) -> list[JobSnapshot]:
-        """原始数据 → JobSnapshot 列表"""
+def run_scraper(config: ScraperConfig, settings: Settings) -> Path:
+    """
+    启动 boss-zhipin-scraper CLI（subprocess）。
 
-    def run_for_keyword_city(
-        self, keyword: Keyword, city: City, snapshot_date: date, max_pages: int = 10
-    ) -> list[JobSnapshot]:
-        """
-        模板方法：抓取 + 解析 + 去重 + 入库。
-        子类一般无需重写（仅当需要特殊处理时）。
-        """
+    等价命令：
+      $ boss-zhipin-scraper collect \
+          --keyword "后端" --city "北京" \
+          --max-pages 3 --output data/raw/beijing_houduan.json
+
+    返回：产出的 JSON 路径 Path(...)
+    失败抛 ScraperError / ScraperTimeoutError。
+
+    采集跑在**本机 Chrome CDP** 上（需要本机 Chrome + boss-zhipin-scraper 依赖）。
+    """
+
+
+def run_scraper_batch(
+    keywords: list[str], cities: list[str], settings: Settings, max_pages: int = 3
+) -> list[Path]:
+    """
+    多轮渐进：遍历 (keyword × city) 组合，逐次调用 run_scraper()。
+    每轮之间 ≥2 分钟延迟（boss-zhipin-scraper 内部管理 CDP session 重建）。
+    返回所有 JSON 路径列表。
+
+    约束：CDP 被动捕获模式，一个 keyword×city 组合内可多页；
+          不同组合之间需重建 CDP session（boss-zhipin-scraper 自动处理）。
+    """
+
+
+def check_scraper_installed() -> bool:
+    """环境检查：boss-zhipin-scraper 是否可通过 PATH 调用"""
+    return shutil.which("boss-zhipin-scraper") is not None
 ```
 
 ---
 
-## 7. `collectors/boss.py` — BOSS 直聘实现
+## 7. `importers/boss_importer.py` — JSON → SQLite UPSERT
 
 ```python
-class BossCollector(CollectorBase):
-    platform = "BOSS"
+from __future__ import annotations
+import json
+from pathlib import Path
+from datetime import date
+from core.models import JobSnapshot
+from core.cleansing import dedup_jobs
 
-    def fetch_page(self, keyword: str, city: City, page: int) -> list[dict]:
-            # 调用 BOSS 搜索 API（参考 boss-zhipin-scraper）
-            # 注入 wt2 cookie + UA
-            # 检测 code=32 → 抛 AccountBannedError
-            # 返回 list[dict]（encryptJobId, jobName, salaryDesc, ...）
 
-    def parse_page(self, raw: list[dict], city: City, snapshot_date: date) -> list[JobSnapshot]:
-            # 逐条解析：
-            #   salaryDesc → parse_salary()
-            #   city → normalize_city() → city.id
-            #   学历归一 → clean_education()
-            #   skillTags → list[str]
-            # 返回 list[JobSnapshot]
+# ================================================================
+# boss-zhipin-scraper JSON 输出字段映射（固定约定）
+# ================================================================
+# BOSS 字段         → JSON key (scraper 输出)     → JobSnapshot 字段
+# ─────────────────────────────────────────────────────────────────
+# encryptJobId      → "encrypt_job_id"             → encrypt_job_id
+# jobName            → "job_name"                   → job_name
+# salaryDesc         → "salary_raw"                 → salary_raw
+# city               → "city"                       → normalize_city() → city_id
+# brandName          → "company_name"               → company_name
+# requireEdu         → "education"                  → education
+# requireWorkYears   → "experience"                 → experience
+# jobDescription     → "jd_fulltext"                → jd_fulltext (可空)
+# skillTags          → "skill_tags" (list)          → skill_tags
+# ================================================================
+
+
+def read_scraper_json(json_path: Path) -> list[dict]:
+    """读取 scraper 产出的 JSON 文件 → list[dict]（原始记录）"""
+
+
+def parse_scraper_record(raw: dict, city_id: int, snapshot_date: date) -> JobSnapshot:
+    """
+    JSON 原始记录 → JobSnapshot dataclass。
+    包含：salary_raw → parse_salary() 拆三字段、city → normalize_city、学历归一
+    """
+
+
+def import_json_to_db(
+    json_path: Path,
+    city_id: int,
+    snapshot_date: date,
+    conn,
+) -> int:
+    """
+    1. read_scraper_json(json_path)
+    2. 逐条 parse_scraper_record(→ JobSnapshot)
+    3. dedup_jobs(排除已有 (encrypt_job_id, snapshot_date))
+    4. insert_jobs_batch(→ SQLite，UPSERT 语义)
+    返回：新插入数量
+    """
+
+
+def import_batch(
+    json_paths: list[Path], city_lookup: dict[str, int], snapshot_date: date, conn
+) -> dict[str, int]:
+    """
+    批量导入：遍历所有 JSON 路径，按城市分组入库。
+    返回：{"total": N, "new": M, "duplicates": D}
+    """
+
+
+def validate_schema_compatibility(json_path: Path) -> dict[str, bool]:
+    """
+    schema 兼容性检查：确认 JSON 包含必填字段（encrypt_job_id, job_name, salary_raw, city），
+    防止 scraper 上游输出格式变更导致静默丢字段。
+    返回：{"encrypt_job_id": True, "salary_raw": True, ...}
+    """
 ```
 
 ---
 
-## 8. `analysis/stats.py` — 统计分析
+## 8. 异常体系（`core/exceptions.py`）追加
+
+```python
+class ScraperError(TrackerError):
+    """boss-zhipin-scraper CLI 执行失败（非零退出码 / 输出为空）"""
+
+class ScraperTimeoutError(ScraperError):
+    """scraper 子进程超时（>300s 无响应）"""
+
+class SchemaIncompatibleError(TrackerError):
+    """scraper JSON 输出字段不兼容——上游输出格式变更"""
+```
+
+---
+
+## 9. `analysis/stats.py` — 统计分析
 
 ```python
 def calculate_yoy_qoq(
@@ -306,7 +396,7 @@ def get_quarter_of(date: date) -> tuple[int, int]:
 
 ---
 
-## 9. `analysis/wordfreq.py` — JD 分词与词频
+## 10. `analysis/wordfreq.py` — JD 分词与词频
 
 ```python
 STOPWORDS = {"的", "了", "和", "是", "在", "熟悉", "熟练掌握", "掌握", "了解"}
@@ -331,7 +421,7 @@ def top_keywords_for_direction(
 
 ---
 
-## 10. `reporting/renderer.py` — HTML 报告渲染
+## 11. `reporting/renderer.py` — HTML 报告渲染
 
 ```python
 def render_quarterly_report(
@@ -353,7 +443,7 @@ def render_quarterly_report(
 
 ---
 
-## 11. 异常体系（`core/exceptions.py`）
+## 12. 异常体系（`core/exceptions.py` — 更新后完整列表）
 
 ```python
 class TrackerError(Exception): """基类"""
@@ -363,24 +453,30 @@ class ConfigError(TrackerError): """配置错误（YAML 格式、缺失字段）
 class SalaryParseError(TrackerError):
     """薪资解析失败，raw 字段保留原文"""
 
-class FetchError(TrackerError): """HTTP 请求失败（非反爬）"""
-
-class AntiCrawlError(TrackerError):
-    """反爬触发：被封 IP / code=32 账号封禁 / 滑块"""
-
-class AccountBannedError(AntiCrawlError):
-    """BOSS code=32 账号临时封禁 → 应触发健康检查"""
-
 class SourceNotConfiguredError(TrackerError):
     """平台城市编码未配置（如 TODO_W2_BOSS_BEIJING 未替换）"""
 
 class DBConstraintError(TrackerError):
     """UNIQUE 约束冲突（理论上 dedup 已处理，仅 debug 出现）"""
+
+# ── 采集层新增（v1.1）──
+class ScraperError(TrackerError):
+    """boss-zhipin-scraper CLI 执行失败（非零退出码 / 输出为空）"""
+
+class ScraperTimeoutError(ScraperError):
+    """scraper 子进程超时（>300s 无响应）"""
+
+class SchemaIncompatibleError(TrackerError):
+    """scraper JSON 输出字段不兼容——上游输出格式变更"""
+
+# ── 旧 API scraper 异常已移除（v1.1）──
+# FetchError, AntiCrawlError, AccountBannedError
+# boss-zhipin-scraper 内部处理反爬逻辑，我们不直调 BOSS API
 ```
 
 ---
 
-## 12. 分阶段交付接口矩阵
+## 13. 分阶段交付接口矩阵
 
 | 接口 | W1 写 | W2 写 | W3 写 | W4 写 | W5 写 |
 |------|------|------|------|------|------|
@@ -394,10 +490,9 @@ class DBConstraintError(TrackerError):
 | `storage/schema.py` | ✅ | | | | |
 | `storage/migrations/0001.sql` | ✅ | | | | |
 | `storage/dao.py` | ✅ | | | | |
-| `collectors/base.py` | ✅ | | | | |
-| `collectors/boss.py` | | ✅ | | | |
+| `collectors/boss_scraper.py` | ✅ | | | | |
+| `importers/boss_importer.py` | ✅ | | | | |
 | `collectors/jobui.py` | | ✅ | | | |
-| `utils/anti_crawl.py` | ✅ | | | | |
 | `utils/logger.py` | ✅ | | | | |
 | `utils/http.py` | ✅ | | | | |
 | `analysis/stats.py` | | | ✅ | | |
@@ -411,11 +506,12 @@ class DBConstraintError(TrackerError):
 
 ---
 
-## 13. 研发验收清单（W1 收口自测）
+## 14. 研发验收清单（W1 收口自测）
 
 - [ ] `python -c "from core.models import JobSnapshot, DirectionStats"` 导入无报错
 - [ ] `python -c "from storage.dao import insert_jobs_batch"` 导入无报错
 - [ ] `python -m storage.schema` 创建 sqlite 文件成功，4 张表 + schema_version 全部存在
 - [ ] 种子数据查询：`SELECT * FROM cities` 返回 5 行；`SELECT * FROM keywords` 返回 35 行
-- [ ] `python -c "from collectors.base import CollectorBase"` 导入无报错
+- [ ] `python -c "from collectors.boss_scraper import check_scraper_installed; print(check_scraper_installed())"` 导入无报错，环境检查返回 bool
+- [ ] `python -c "from importers.boss_importer import import_json_to_db"` 导入无报错
 - [ ] `pytest tests/` 单元测试 ≥ 5 个通过（薪资解析、城市归一、学历归一、同比计算、季度归属）

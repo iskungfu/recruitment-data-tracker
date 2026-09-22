@@ -1,0 +1,37 @@
+[project]
+name = "recruitment-data-tracker"
+version = "0.2.0"
+description = "招聘数据采集与分析系统：BOSS 直聘季度自动采集 + 薪资趋势/岗位数量/技术要求演变分析"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "iskungfu" }]
+
+dependencies = [
+    "pyyaml>=6.0",
+    # 采集层：boss-zhipin-scraper 为外部 CLI 依赖（ADR-015），
+    # 不作为 Python 包引入，通过 subprocess 调用，见 collectors/boss_scraper.py
+    # Week 3+ 预留：
+    # "jieba>=0.42", "jinja2>=3.1", "plotly>=5.18", "pandas>=2.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.1",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["core", "storage", "collectors", "importers", "analysis"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

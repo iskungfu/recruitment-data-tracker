@@ -1,61 +1,7 @@
-# 数据库 ERD 与 Schema
-
-> 版本：v1.0 | 日期：2026-09-22 | 对应架构概览 §2 模块 `storage/`
-
----
-
-## 1. 实体关系图（ERD）
-
-```
-┌──────────────┐        ┌──────────────────┐        ┌──────────────┐
-│   keywords   │        │   job_snapshot    │        │    cities     │
-├──────────────┤        ├──────────────────┤        ├──────────────┤
-│ id (PK)      │        │ id (PK, AUTOINCR)│        │ id (PK)      │
-│ direction    │        │ job_id            │◄──┐    │ name         │
-│ keyword      │──┐     │ job_name          │   │    │ province     │
-│ platform     │  │     │ salary_raw        │   │    │ boss_city_code│
-│ is_active    │  │     │ salary_min        │   │    │ jobui_slug   │
-└──────────────┘  │     │ salary_max        │   │    │ is_active    │
-                  │     │ year_multiplier   │   │    └──────────────┘
-                  │     │ salary_unit       │   │          │
-┌──────────────┐  │     │ city_id (FK)      │───┼──────────┘
-│  snapshots   │  │     │ company_name      │   │
-├──────────────┤  │     │ education         │   │
-│ id (PK)      │  │     │ experience        │   │
-│ snapshot_date│  │     │ jd_fulltext       │   │
-│ keyword_id───┼──┘     │ skill_tags        │   │
-│ city_id ─────┼────────│ platform          │   │
-│ city_name    │        │ encrypt_job_id    │   │
-│ keyword      │        │ snapshot_date     │   │
-│ status       │        │ created_at        │   │
-│ started_at   │        └──────────────────┘   │
-│ completed_at │                               │
-│ job_count    │        ┌──────────────────┐    │
-│ error_log    │        │  schema_version   │    │
-└──────────────┘        ├──────────────────┤
-                         │ version          │
-                         │ applied_at       │
-                         │ description      │
-                         └──────────────────┘
-```
-
-### 关系说明
-
-| 关系 | 类型 | 说明 |
-|------|------|------|
-| keywords → job_snapshot | 逻辑关联 | 通过 `keyword` 字段值匹配（非外键，keyword 可能变更） |
-| cities → job_snapshot | FK | `city_id` 外键关联，约束数据完整性 |
-| snapshots → keywords | FK | `keyword_id` 外键，记录每次采集使用的关键词 |
-| snapshots → cities | FK | `city_id` 外键，记录每次采集的目标城市 |
-
----
-
-## 2. 完整 DDL（SQLite）
-
-```sql
 -- ============================================================
 -- 招聘数据采集与分析系统 — 数据库 Schema v1
 -- 兼容 SQLite 3.35+
+-- 来源：docs/architecture/02-database-erd.md §2（原样落地）
 -- ============================================================
 
 PRAGMA journal_mode = WAL;
@@ -165,8 +111,8 @@ CREATE TABLE IF NOT EXISTS snapshots (
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX idx_snapshots_date ON snapshots(snapshot_date);
-CREATE INDEX idx_snapshots_status ON snapshots(status);
+CREATE INDEX IF NOT EXISTS idx_snapshots_date ON snapshots(snapshot_date);
+CREATE INDEX IF NOT EXISTS idx_snapshots_status ON snapshots(status);
 
 -- ----------------------------------------------------------
 -- 表 5: job_snapshot — 岗位快照（核心数据表）
@@ -196,71 +142,7 @@ CREATE TABLE IF NOT EXISTS job_snapshot (
 );
 
 -- 查询索引
-CREATE INDEX idx_job_city      ON job_snapshot(city_id);
-CREATE INDEX idx_job_date      ON job_snapshot(snapshot_date);
-CREATE INDEX idx_job_direction ON job_snapshot(job_name);  -- 辅助按方向筛选
-CREATE INDEX idx_job_salary    ON job_snapshot(salary_min, salary_max);
-```
-
----
-
-## 3. 字段映射表：PRD §3.5 ↔ DB Schema
-
-| PRD 字段 | DB 列 | 类型 | 说明 |
-|---------|-------|------|------|
-| 岗位名 | `job_name` | TEXT NOT NULL | 原始岗位名，不做归一化 |
-| 薪资原文 | `salary_raw` | TEXT NOT NULL | 保留原文如 "30-60K·15薪" |
-| 薪资下限 | `salary_min` | REAL | 解析后数值（K/月），日薪 NULL |
-| 薪资上限 | `salary_max` | REAL | 解析后数值（K/月），日薪 NULL |
-| 城市 | `city_id` → `cities.name` | FK | 通过 city_id 关联 |
-| 公司名 | `company_name` | TEXT NOT NULL | 原始公司名 |
-| 学历要求 | `education` | TEXT | "本科及以上"→"本科"（归一化） |
-| 经验要求 | `experience` | TEXT | 原始经验文本 |
-| JD 全文 | `jd_fulltext` | TEXT | 可空，W2 两阶段回填 |
-| 技能标签 | `skill_tags` | TEXT | JSON 数组字符串 |
-| 平台来源 | `platform` | TEXT NOT NULL | "BOSS" / "JOBUI" |
-| 平台原 job_id | `encrypt_job_id` | TEXT | BOSS encryptJobId |
-| 抓取日期 | `snapshot_date` | TEXT NOT NULL | YYYY-MM-DD |
-
-### 扩展字段（PRD 附录建议采纳）
-
-| 扩展字段 | DB 列 | 类型 | 来源 |
-|---------|-------|------|------|
-| 年薪月数 | `year_multiplier` | INTEGER | PRD B.1 → 已纳入 |
-| 薪资单位 | `salary_unit` | TEXT | 预研暴露日薪制岗位 → 已纳入 |
-
----
-
-## 4. 数据量估算
-
-| 表 | 单季度增量 | 一年累积 | 说明 |
-|----|----------|---------|------|
-| `cities` | 0（静态） | 5 行 | 5 城固定 |
-| `keywords` | 0（静态） | 35 行 | PRD §3.1 全量关键词 |
-| `snapshots` | 35 × 5 × 1 = 175 行 | 700 行 | 每关键词每城一次采集任务记录 |
-| `job_snapshot` | ≤5000 行 | ≤20000 行 | 每关键词每城 ≤10 页 ≈ 300 条，35 关键词 × 5 城 ≈ 实际去重后约 3000-5000 |
-
-**总数据量**：一年 4 个季度 < 30,000 行，SQLite 单文件 < 50MB，内存分析完全可行。
-
----
-
-## 5. 迁移策略
-
-| 版本 | 变更 | 文件 |
-|------|------|------|
-| v1 | 初始建表（4 表 + schema_version） | `storage/migrations/0001_initial.sql` |
-| v2 (预留) | 日薪制岗位 `salary_unit` 字段 | 仅 DDL 补充，无数据迁移 |
-| v3 (预留) | 职友集数据新增 `source_url` 字段 | ALTER TABLE ADD COLUMN |
-
-迁移执行：`storage/migrations/` 目录按编号升序，由部署脚本 `python -m storage.migrate` 执行。
-
----
-
-## 6. 研发可直接开工的代码
-
-基于此 ERD，以下文件可立即编写：
-
-- `storage/schema.py`：`create_tables(conn)` + `insert_seed_data(conn)`
-- `storage/migrations/0001_initial.sql`：上述完整 DDL（直接复制）
-- `storage/connection.py`：`get_connection(db_path)` 单例
-- `storage/dao.py`：`insert_job()`, `get_jobs_by_date()`, `get_snapshot_stats()` 等
+CREATE INDEX IF NOT EXISTS idx_job_city      ON job_snapshot(city_id);
+CREATE INDEX IF NOT EXISTS idx_job_date      ON job_snapshot(snapshot_date);
+CREATE INDEX IF NOT EXISTS idx_job_direction ON job_snapshot(job_name);  -- 辅助按方向筛选
+CREATE INDEX IF NOT EXISTS idx_job_salary    ON job_snapshot(salary_min, salary_max);

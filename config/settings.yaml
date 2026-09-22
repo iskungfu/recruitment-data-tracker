@@ -1,0 +1,34 @@
+# 招聘数据采集与分析系统 — 主配置
+# 提交至 Git；本地敏感信息（Cookie）放 config/local/（.gitignore 排除）
+
+system:
+  db_path: data/recruitment.db
+  snapshot_dates: ["01-01", "04-01", "07-01", "10-01"]  # 季度采集日
+  max_pages_per_keyword_city: 3                           # ≤3 页/关键词/城市（ADR-011，v1.1 收紧）
+
+cities:
+  active: [北京, 上海, 深圳, 杭州, 成都]
+
+# 关键词维护在 DB keywords 表（35 条种子数据）；此处仅作 plan 备份
+
+scraper:
+  # 外部 CLI 依赖 boss-zhipin-scraper（https://github.com/eatmoreduck/boss-zhipin-scraper）
+  # 该工具不是 PATH 上的 CLI，入口为 scripts/boss_cdp_raw.py。
+  # entry 留空时按 BOSS_SCRAPER_ENTRY 环境变量 → PATH 别名 → 常见相对路径自动探测。
+  entry: null                     # 例: external/boss-zhipin-scraper/scripts/boss_cdp_raw.py
+  cli_alias: boss-zhipin-scraper  # 若用户自建了 PATH wrapper
+  python_bin: python3
+  raw_output_dir: data/raw
+  timeout_sec: 300                # 子进程超时 300 秒
+  batch_delay_sec: 120            # 批次间延迟（多轮渐进，CDP session 重建）
+  cdp_port: 9222
+
+reporting:
+  output_dir: data/reports
+  top_n_skills: 20
+
+logging:
+  level: INFO
+  format: json
+  dir: data/logs
+  rotation: weekly

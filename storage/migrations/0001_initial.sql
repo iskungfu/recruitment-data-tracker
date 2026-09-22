@@ -59,7 +59,6 @@ INSERT OR IGNORE INTO keywords (direction, keyword) VALUES
     ('前端',   '前端'),
     ('前端',   'Vue'),
     ('前端',   'React'),
-    ('前端',   'JavaScript'),
     ('后端',   '后端'),
     ('后端',   'Java'),
     ('后端',   'Python'),

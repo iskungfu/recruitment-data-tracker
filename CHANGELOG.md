@@ -13,7 +13,7 @@
 ### Added (Week 2 — 采集管线，架构 v1.1 CDP 方案)
 - `collectors/boss_scraper.py`：boss-zhipin-scraper CLI wrapper（subprocess.Popen，300s 超时 → `ScraperTimeoutError`，非零退出/空输出 → `ScraperError`）；按真实 CLI（`scripts/boss_cdp_raw.py --pages`）实现，函数签名同接口文档 §6
 - `importers/boss_importer.py`：JSON → SQLite UPSERT（§7 五函数）；字段映射兼容 scraper 真实输出、§7 假设字段、W1 预研样本三种格式；`dedup_jobs` + `INSERT OR IGNORE` 双重去重
-- `storage/schema.py` + `storage/migrations/0001_initial.sql`：4 表 + schema_version + 种子数据（5 城 + 35 关键词）；含 `year_multiplier` / `salary_unit` / `UNIQUE(encrypt_job_id, snapshot_date)`
+- `storage/schema.py` + `storage/migrations/0001_initial.sql`：4 表 + schema_version + 种子数据（5 城 + 34 关键词，PRD §3.1 裁决口径）；含 `year_multiplier` / `salary_unit` / `UNIQUE(encrypt_job_id, snapshot_date)`
 - `core/`：models / salary 解析（月薪·N薪/日薪/时薪，日薪不折算混算）/ cleansing（学历、公司名）/ dedup / config / exceptions
 - `storage/`：connection（WAL + busy_timeout）/ dao / `python -m storage.schema` 初始化入口
 - `analysis/stats.py`：季度归属 + 同比/环比（分母 NULL/0 → NULL）
@@ -21,7 +21,9 @@
 - 89 个单元测试全部通过（薪资/城市/学历/去重/季度/同比环比/importer/wrapper/schema）
 
 ### Changed
-- ERD 种子数据补齐第 35 个关键词（前端/JavaScript）——原文档容量表写 35 行但清单只列 34 个，按 §14 验收对齐，待对照 PRD §3.1 确认
+- **用户裁决（2026-09-23，PRD §3.1）**：前端方向保持 3 个关键词（前端/Vue/React），keywords 种子数据定为 34 行；删除曾补入的 `('前端', 'JavaScript')`，SQL / ERD / ADR / 配置 / README / 测试断言同步回退为 34
+- 架构文档 v1.2：`03-module-interfaces.md` 替换为 v1.2 版——§6 CLI 入口对齐 boss-zhipin-scraper 上游真实命令（`scripts/boss_cdp_raw.py --pages`），§7 字段映射表对齐 scraper 真实 JSON 输出 key（三格式兼容兜底）；§14 验收口径同步为 keywords 34 行
+- ERD §4 容量估算同步：keywords 34 行、snapshots 单季度 170 行、一年累积 680 行
 
 ### Planned
 - Week 3：同比分析 + 关键词词云 + HTML 报告

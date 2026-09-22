@@ -1,7 +1,8 @@
 # 模块接口定义
 
-> 版本：v1.1 | 日期：2026-09-23 | 对应架构概览 v1.1
-> v1.1 变更：采集层从 ABC 基类 API scraper 切换为 subprocess CLI wrapper + JSON importer
+> 版本：v1.2 | 日期：2026-09-23 | 对应架构概览 v1.1
+> v1.1 变更：采集层切换 CLI wrapper + JSON importer
+> v1.2 变更：§6 CLI 入口对齐 boss-zhipin-scraper 上游真实命令；§7 字段映射表对齐 scraper 真实 JSON 输出 key
 
 ---
 
@@ -249,10 +250,17 @@ def run_scraper(config: ScraperConfig, settings: Settings) -> Path:
     """
     启动 boss-zhipin-scraper CLI（subprocess）。
 
+    真实 CLI 入口：scripts/boss_cdp_raw.py --pages（非文档假设的 boss-zhipin-scraper collect --max-pages）
     等价命令：
-      $ boss-zhipin-scraper collect \
-          --keyword "后端" --city "北京" \
-          --max-pages 3 --output data/raw/beijing_houduan.json
+      $ python scripts/boss_cdp_raw.py --pages 3 --keyword "后端" --city "北京"
+      → 输出 data/raw/beijing_houduan_YYYYMMDD.json
+
+    入口解析优先级（run_scraper 内部实现）：
+      1. settings.scraper_entry（pyproject.toml / env 显式配置，最高优先）
+      2. $BOSS_SCRAPER_ENTRY 环境变量
+      3. PATH 中可执行文件 shutil.which("boss-zhipin-scraper")
+      4. 相对路径探测：依次尝试 ./boss-zhipin-scraper/scripts/boss_cdp_raw.py、
+         ../boss-zhipin-scraper/scripts/boss_cdp_raw.py（适合 monorepo 场景）
 
     返回：产出的 JSON 路径 Path(...)
     失败抛 ScraperError / ScraperTimeoutError。
@@ -293,20 +301,30 @@ from core.cleansing import dedup_jobs
 
 
 # ================================================================
-# boss-zhipin-scraper JSON 输出字段映射（固定约定）
+# boss-zhipin-scraper JSON 输出字段映射（对齐上游真实 key）
 # ================================================================
-# BOSS 字段         → JSON key (scraper 输出)     → JobSnapshot 字段
-# ─────────────────────────────────────────────────────────────────
-# encryptJobId      → "encrypt_job_id"             → encrypt_job_id
-# jobName            → "job_name"                   → job_name
-# salaryDesc         → "salary_raw"                 → salary_raw
-# city               → "city"                       → normalize_city() → city_id
-# brandName          → "company_name"               → company_name
-# requireEdu         → "education"                  → education
-# requireWorkYears   → "experience"                 → experience
-# jobDescription     → "jd_fulltext"                → jd_fulltext (可空)
-# skillTags          → "skill_tags" (list)          → skill_tags
+# BOSS 原始字段     → scraper 真实 JSON key        → JobSnapshot 字段        兼容别名（三格式兜底）
+# ──────────────────────────────────────────────────────────────────────────────────────────
+# title (岗位名)    → "title"                      → job_name                "jobName", "job_name"
+# salary (薪资原文) → "salary"                     → salary_raw              "salaryDesc", "salary_desc"
+# location (城市)   → "location"                   → normalize_city()→city_id "city", "city_name"
+# tags (技能标签)    → "tags" (list)                → skill_tags              "skillTags", "skill_tags"
+# boss_name (公司)  → "boss_name"                  → company_name            "brandName", "company_name"
+# encryptJobId      → "encrypt_job_id"             → encrypt_job_id           —
+# jd (JD 全文)      → "jd"                         → jd_fulltext (可空)       "jobDescription", "jd_fulltext"
+# edu (学历)        → "edu"                        → education                "requireEdu", "education"
+# exp (经验)        → "exp"                        → experience               "requireWorkYears", "experience"
 # ================================================================
+# 注：scraper 上游输出格式可能随版本变化。parse_scraper_record() 已实现三格式兼容兜底：
+#   - 主 key（第 2 列）→ 优先读取
+#   - 兼容别名 1（第 4 列第 1 项）→ 主 key 缺失时 fallback
+#   - 兼容别名 2（第 4 列第 2 项）→ 最后 fallback
+# 所有字段均为可选读（缺失时用默认值 / NULL），不会因上游缺字段而抛异常——由
+# validate_schema_compatibility() 在导入前做全量兼容性检查并报告缺失字段。
+# ================================================================
+
+REQUIRED_FIELDS = {"title", "salary", "location", "encrypt_job_id"}
+OPTIONAL_FIELDS = {"boss_name", "edu", "exp", "jd", "tags"}
 
 
 def read_scraper_json(json_path: Path) -> list[dict]:
@@ -346,9 +364,10 @@ def import_batch(
 
 def validate_schema_compatibility(json_path: Path) -> dict[str, bool]:
     """
-    schema 兼容性检查：确认 JSON 包含必填字段（encrypt_job_id, job_name, salary_raw, city），
-    防止 scraper 上游输出格式变更导致静默丢字段。
-    返回：{"encrypt_job_id": True, "salary_raw": True, ...}
+    schema 兼容性检查：确认 JSON 包含 REQUIRED_FIELDS（title, salary, location, encrypt_job_id）。
+    采用三格式兼容兜底——主 key 优先，兼容别名 fallback。
+    返回：{"title": True, "salary": True, "location": True, "encrypt_job_id": True, ...}
+    任一必填字段在所有兼容 key 下均缺失 → 返回 False → 触发 SchemaIncompatibleError。
     """
 ```
 
@@ -511,7 +530,7 @@ class SchemaIncompatibleError(TrackerError):
 - [ ] `python -c "from core.models import JobSnapshot, DirectionStats"` 导入无报错
 - [ ] `python -c "from storage.dao import insert_jobs_batch"` 导入无报错
 - [ ] `python -m storage.schema` 创建 sqlite 文件成功，4 张表 + schema_version 全部存在
-- [ ] 种子数据查询：`SELECT * FROM cities` 返回 5 行；`SELECT * FROM keywords` 返回 35 行
+- [ ] 种子数据查询：`SELECT * FROM cities` 返回 5 行；`SELECT * FROM keywords` 返回 34 行（2026-09-23 PRD §3.1 裁决口径）
 - [ ] `python -c "from collectors.boss_scraper import check_scraper_installed; print(check_scraper_installed())"` 导入无报错，环境检查返回 bool
 - [ ] `python -c "from importers.boss_importer import import_json_to_db"` 导入无报错
 - [ ] `pytest tests/` 单元测试 ≥ 5 个通过（薪资解析、城市归一、学历归一、同比计算、季度归属）

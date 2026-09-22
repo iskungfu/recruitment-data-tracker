@@ -18,8 +18,9 @@ class TestSchema:
         assert len(rows) == 5
         assert {r["name"] for r in rows} == {"北京", "上海", "深圳", "杭州", "成都"}
 
-    def test_seed_keywords_35_rows(self, db_conn):
-        assert db_conn.execute("SELECT COUNT(*) c FROM keywords").fetchone()["c"] == 35
+    def test_seed_keywords_34_rows(self, db_conn):
+        """34 行 = PRD §3.1 裁决口径（前端 3 词：前端/Vue/React，不含 JavaScript）"""
+        assert db_conn.execute("SELECT COUNT(*) c FROM keywords").fetchone()["c"] == 34
 
     def test_job_snapshot_unique_constraint(self, db_conn):
         """UNIQUE(encrypt_job_id, snapshot_date) 约束存在"""
@@ -41,5 +42,5 @@ class TestSchema:
         from storage.schema import create_tables
 
         create_tables(db_conn)
-        assert db_conn.execute("SELECT COUNT(*) c FROM keywords").fetchone()["c"] == 35
+        assert db_conn.execute("SELECT COUNT(*) c FROM keywords").fetchone()["c"] == 34
         assert db_conn.execute("SELECT COUNT(*) c FROM cities").fetchone()["c"] == 5

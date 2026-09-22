@@ -32,7 +32,7 @@ cd recruitment-data-tracker
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-# 1. 初始化数据库（4 表 + schema_version + 5 城 / 35 关键词种子）
+# 1. 初始化数据库（4 表 + schema_version + 5 城 / 34 关键词种子）
 python -m storage.schema
 
 # 2. 安装外部采集 CLI（ADR-015：复用其 Chrome CDP 被动捕获，不自建请求）

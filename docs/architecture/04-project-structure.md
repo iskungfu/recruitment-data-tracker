@@ -409,7 +409,7 @@ source .venv/bin/activate
 python -m tracker migrate
 
 echo "✅ 数据库初始化完成：data/recruitment.db"
-echo "📊 种子数据：5 城 + 35 关键词"
+echo "📊 种子数据：5 城 + 34 关键词"
 ```
 
 ---

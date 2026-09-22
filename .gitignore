@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 本地配置与凭据
+config/local/cookies.json
+config/local/*.json
+
+# 数据与运行时文件
+data/recruitment.db
+data/reports/
+data/logs/
+
+# 环境变量
+.env
+.env.local
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb

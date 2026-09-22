@@ -1,7 +1,7 @@
 # 架构决策记录（ADR）
 
-> 版本：v1.0 | 日期：2026-09-22
-> 格式参照 [MADR](https://adr.github.io/madr/)。每条 ADR 记录一个关键决策的**取舍理由**而非"做了什么"。
+> 版本：v1.1 | 日期：2026-09-23
+> v1.1 变更：新增 ADR-015（采集层复用 boss-zhipin-scraper CDP 被动捕获），原 ADR-015 顺延为 ADR-016
 
 ---
 
@@ -262,7 +262,60 @@ PRD §6 cron 表达式 `0 3 2 1,4,7,10 *`（采集后 25 小时）。PRD 附录 
 
 ---
 
-## ADR-015：架构设计文档优先于代码
+## ADR-015：采集层复用 boss-zhipin-scraper CDP 被动捕获
+
+### 状态
+Accepted（2026-09-23）
+
+### 背景
+Week 1 预研尝试直调 BOSS 搜索 API 进行自研 scraper，在实测中暴露了严重风控问题：
+- **约 3 次快速 API 请求即触发 code=32 账号临时封禁**（PreResearch 实测数据）
+- 封禁期间数小时不可用，需等待自动解除
+- 直调 API 的反爬对抗成本极高：需要逆向 BOSS 请求签名、绕过 Fetch 域拦截（warlockdata 清页）、维持 CDP 登录态
+
+与此同时，开源项目 `eatmoreduck/boss-zhipin-scraper` 已在 PreResearch 中跑通：
+- Chrome CDP 被动捕获 — 不直接调 API，而是监听浏览器网络请求
+- ≥60 条真实数据（含明文薪资 `salaryDesc`、完整字段覆盖 PRD §3.5）
+- 60/60 encryptJobId 唯一，52/60 解析出 min/max K
+
+### 决策
++ **采集层架构从"自研 API scraper"切换为"boss-zhipin-scraper CLI wrapper + 数据导入器"**。
++ boss-zhipin-scraper 作为**外部 CLI 依赖**（通过 `subprocess.Popen` 调用），不是我们的代码。
++ 我们的代码职责变为：① 组装 CLI 参数 ② 调 subprocess ③ 解析 JSON 输出 ④ 清洗入库。
+
+### 备选方案
+| 方案 | 优点 | 缺点 | 裁决 |
+|------|------|------|------|
+| **自研 API scraper** | 完全可控、零外部依赖 | PreResearch 实测 3 次 API 请求即封号；反爬逆向成本极高（签名逆向、CDP 域拦截）；W2 大概率无法交付 ≥900 条目标 | ❌ 风险过高 |
+| 阿里云市场付费 API | 稳定可靠、有 SLA | 约 50 元/次，季度成本 50×35×5 = 多轮渐进难以估算；预算需用户批准；无"免费验证"通道 | ❌ 备选保留，scraper 不可行时启用 |
+| **boss-zhipin-scraper CLI wrapper** ✅ | PreResearch 已验证可行；CDP 被动捕获绕过 API 风控；开源社区持续维护 | 依赖本机 Chrome + Chrome Profile 登录态；上游停止维护风险 | ✅ 采纳 |
+
+### 后果
++ **正面**：
+  - 核心风控问题由 boss-zhipin-scraper 内部消化，我们无需处理反爬
+  - CDP 被动捕获 = 跟真实浏览器行为一致，封号概率大幅降低
+  - 接口简单：`boss-zhipin-scraper collect --keyword X --city Y` → JSON → import
+
+- **负面**：
+  - 部署增加外部依赖（`pip install boss-zhipin-scraper` + 本机 Chrome）
+  - 上游停止维护风险 → 已决策：锁定当前 commit + fork 到个人仓库备灾
+  - 采集瓶颈从网络 I/O 变为 Chrome CDP（每页约 5-8s，可接受）
+
+### 架构影响
+- **模块 `collectors/` 拆分**：`collectors/boss_scraper.py`（CLI wrapper）+ `importers/boss_importer.py`（JSON→SQLite UPSERT）
+- **移除模块**：`collectors/base.py`（ABC 基类）、`utils/anti_crawl.py`（反爬工具）— 反爬逻辑由 scraper 内部管理
+- **新增异常**：`ScraperError` / `ScraperTimeoutError` / `SchemaIncompatibleError`
+- **依赖变更**：`playwright` 从直接依赖移除，`boss-zhipin-scraper` 作为外部 CLI 新增
+- **不变**：ERD（4 表 schema）、`core/` 清洗/模型层、`analysis/` 分析层、`reporting/` 报告层
+
+### PreResearch 封号证据
+- **实测**：同一 session 内第 3 次 API 搜索请求 → HTTP code=32 `"账户存在异常行为，已暂时被禁止"`
+- **影响**：封禁期间本机完全无法调 BOSS 搜索 API；登录态不受影响（手机 App 正常）
+- **恢复**：数小时后自动解除，重新取 wt2 即可
+
+---
+
+## ADR-016：架构设计文档优先于代码
 
 ### 状态
 Accepted
@@ -294,6 +347,7 @@ Accepted
 | 012 | W1 预研 — JD 两阶段回填 |
 | 013 | W1 预研范围 — 职友集同步预研 |
 | 014 | B.4 — 报告 cron 推迟 25 小时 |
-| 015 | W1 启动 — 文档先于代码 |
+| 015 | W1 预研 — 采集层复用 boss-zhipin-scraper CDP 被动捕获 vs 自研 API scraper |
+| 016 | W1 启动 — 文档先于代码 |
 
 所有 ADR 严格对应 PRD 已有决策或预研已暴露风险，**未引入未经裁决的新约束**。

@@ -251,13 +251,43 @@ class TestPlatformSplit:
         assert backend["by_platform"]["jobui"]["job_count"] == 1
 
     def test_unique_jobs_matches_sha1_spec(self, mixed_db):
-        """去重口径锁定：sha1(f"{job_name}|{company_name}|{city_id}")，可复算"""
+        """去重口径锁定：sha1(norm(job_name)|norm(company)|norm(city_id)) 可复算；
+        norm = strip().casefold()——大小写/首尾空白变体计为同一岗位"""
         import hashlib
+
+        def n(v) -> str:
+            return "" if v is None else str(v).strip().casefold()
+
         expect = len({
-            hashlib.sha1(e.encode()).hexdigest()
-            for e in ("Java后端工程师|测试公司|1", "Python后端工程师|另一公司|1")
+            hashlib.sha1(f"{n(a)}|{n(b)}|{n(c)}".encode()).hexdigest()
+            for a, b, c in (("Java后端工程师", "测试公司", 1),
+                            ("java后端工程师", "测试公司", 1),      # 大小写变体 → 同 1 个
+                            ("  Java后端工程师 ", "测试公司 ", 1),  # 首尾空白变体 → 同 1 个
+                            ("Python后端工程师", "另一公司", 1))
         })
+        assert expect == 2
         assert compute_yoy_qoq(mixed_db)["overall"]["total_unique_jobs"] == expect
+
+    def test_unique_jobs_case_insensitive(self, tmp_path):
+        """P3 回归：跨平台同名岗位仅大小写/空白不同 → total_unique_jobs 计 1"""
+        db = tmp_path / "case.db"
+        conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
+        create_tables(conn)
+        for eid, name, company, platform in (
+            ("c1", "Python后端工程师", "测试公司", "BOSS"),
+            ("c2", "python后端工程师", "测试公司", "JOBUI"),
+            ("c3", "  python后端工程师 ", " 测试公司 ", "JOBUI"),
+        ):
+            conn.execute(
+                _INSERT,
+                (eid, name, "10-20K", 10.0, 20.0, None, "month",
+                 1, company, "本科", "3-5年", None, "[]",
+                 platform, eid, "2026-09-23"),
+            )
+        conn.commit()
+        conn.close()
+        assert compute_yoy_qoq(db)["overall"]["total_unique_jobs"] == 1
 
     def test_pure_boss_db_by_platform(self, analysis_db):
         """纯 BOSS 库：by_platform 只含 boss；唯一数 = 本季岗位数（无跨平台重复）"""

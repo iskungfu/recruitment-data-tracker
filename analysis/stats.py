@@ -271,7 +271,9 @@ def compute_yoy_qoq(db_path: str | Path, city: str | int | None = None) -> dict:
         return stats
 
     def _norm(v) -> str:
-        return "" if v is None else str(v)
+        # P3 修复（2026-09-23）：大小写/首尾空白归一——"Python后端" 与
+        # "python后端" 计为同一岗位（保守方向：只并同义变体，不误并不同岗）
+        return "" if v is None else str(v).strip().casefold()
 
     # P2 跨平台去重 KPI：job_name+company_name+city_id 归一哈希（sha1）去重，
     # 仅作报告层统计口径，不落库（组长裁决 2026-09-23）

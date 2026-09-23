@@ -16,7 +16,7 @@
 | Week 2 — 采集管线（v1.1 CDP 方案） | ✅ 完成（scraper CLI wrapper + JSON importer + schema/迁移 + 89 个测试） |
 | Week 3 — 数据分析 | ✅ 完成（同比/环比 + JD 词频 + HTML 单文件报告，102 个测试） |
 | Week 4 — 跨平台 + 报告 | ✅ 完成（步骤二：职友集采集管线 + migration 0002；步骤三：--compare 双平台对比报告 + P2 平台拆分 + 5 项 P3 修复，167 个测试） |
-| Week 5 — 自动化 | 待启动 |
+| Week 5 — 自动化 | ✅ 完成（每周一 9:00 定时任务「招聘数据周报」自动生成 --compare 报告并上传飞书云盘；P3 去重哈希 casefold 修复，168 个测试） |
 
 ## 技术栈
 
@@ -95,7 +95,8 @@ python -m analysis.report --compare data/recruitment.db
 >
 > **跨平台口径（Week 4 步骤三裁决）**：`compute_yoy_qoq` 三维度各带 `by_platform`
 > 子结构（job_count / avg_salary 分平台统计），`overall` 另含 `total_unique_jobs`
-> （本季，按 岗位名+公司+城市 归一 sha1 哈希跨平台去重，仅报告层口径、不落库）。
+> （本季，按 岗位名+公司+城市 归一（strip+casefold）sha1 哈希跨平台去重——
+> 大小写/首尾空白变体计为同一岗位，仅报告层口径、不落库）。
 > 普通模式保持 Week 3 行为，报告头提示「含 N 个 JOBUI 聚合条目，
 > 请参考 --compare 模式跨平台对比」；双平台重叠请勿直接相加。
 

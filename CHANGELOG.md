@@ -55,5 +55,10 @@
 - `tests/`：18 个新测试——平台拆分口径（分平台 job_count/avg_salary、total_unique_jobs sha1 公式锁定、纯 BOSS 库、NULL city_id 样本进「未知城市」桶）、--compare 报告（KPI 双平台卡片 + 唯一岗位数 HTML、趋势图 trace 名/虚实线在 Figure 对象上断言、纯 BOSS 库回退、普通模式三卡片 + 提示行、CLI subprocess）、P3 回归（限速 max 语义、解析失败不入 duplicates、单值日薪参数化、半迁移自愈两条路径）
 - 实测：149 + 18 = 167 个测试全绿；`python -m analysis.report --compare data/demo.db` 产出对比报告（纯 BOSS 库回退正常：JOBUI 0 条/—，唯一岗位数 60 = 条数）；Chromium 渲染验证双平台混合库（60 BOSS + 20 JOBUI 同季）KPI 三卡片与双平台叠放趋势图清晰
 
+### Fixed (Week 5 — P3 去重哈希归一)
+- `analysis/stats.py` `_norm`：去重哈希归一由「仅 None→空串」改为 `str(v).strip().casefold()`——跨平台同名岗位仅大小写/首尾空白不同（如 BOSS "Python后端工程师" vs JOBUI "python后端工程师"）计为 1 个唯一岗位（修复前计 2，唯一岗位数偏高；保守方向不误并不同岗）。规格测试 `test_unique_jobs_matches_sha1_spec` 同步锁定新公式（大小写/空白变体复算为同 1 个），新增 `test_unique_jobs_case_insensitive` 回归；168 个测试全绿
+
+### Added (Week 5 — cron 自动化)
+- 定时任务「招聘数据周报」（aily auto，autoUid `auto_4m43by07vtqa8`）：每周一 9:00 触发，已开闲时执行（凌晨预跑、9:00 投递）。流程：进入持久化项目目录（`~/.aily/workspace/recruitment-data-tracker`，缺失则从公开仓库克隆）→ `git pull origin develop` → `python -m analysis.report --compare` → compare_report.html 上传飞书云盘（命名「招聘数据周报 <日期>.html」）→ 任务评论区汇报本周数据概况（总岗位数 / 双平台岗位数 / 本季均值月薪 / 同比环比）
+
 ### Planned
-- Week 5：cron 自动化 + CI 健康检查

@@ -1,0 +1,39 @@
+{
+  "version": "2026Q3",
+  "generated_at": "2026-09-23T21:20:15+08:00",
+  "generated_by": "tracker-publish v0.1",
+  "data_snapshot_date": "2026-09-23",
+  "datasets": {
+    "summary": "summary.json",
+    "salary_trends": "salary_trends.json",
+    "job_ranking": "job_ranking.json",
+    "edu_exp_distribution": "edu_exp_distribution.json",
+    "data_status": "data_status.json"
+  },
+  "filters": {
+    "cities": [
+      "北京",
+      "上海",
+      "深圳",
+      "杭州",
+      "成都"
+    ],
+    "directions": [
+      "前端",
+      "后端",
+      "算法",
+      "AI应用",
+      "数据",
+      "测试",
+      "IC设计",
+      "IC验证",
+      "工艺",
+      "封测",
+      "设备",
+      "材料"
+    ],
+    "quarters": [
+      "2026Q3"
+    ]
+  }
+}

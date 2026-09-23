@@ -17,6 +17,7 @@
 | Week 3 — 数据分析 | ✅ 完成（同比/环比 + JD 词频 + HTML 单文件报告，102 个测试） |
 | Week 4 — 跨平台 + 报告 | ✅ 完成（步骤二：职友集采集管线 + migration 0002；步骤三：--compare 双平台对比报告 + P2 平台拆分 + 5 项 P3 修复，167 个测试） |
 | Week 5 — 自动化 | ✅ 完成（每周一 9:00 定时任务「招聘数据周报」自动生成 --compare 报告并上传飞书云盘；P3 去重哈希 casefold 修复，168 个测试） |
+| Week 6 — 发布管线 + 网站 | ✅ 完成（`data/publish/` 发布管线：SQLite → 6 个 JSON → GitHub `data` 分支 → jsDelivr CDN → 静态网站；季度采集提醒 cron；176 个测试） |
 
 ## 技术栈
 
@@ -140,6 +141,34 @@ run_scraper_batch(['后端', 'Java'], ['北京', '上海'], settings)   # 失败
 反爬：直接访问搜索 URL（无 Referer）会撞登录墙 → 必须走表单流；高频访问触发
 IP 级图片验证码（约 10-15 分钟自动解封）；登录墙/验证码分别映射
 `JobuiLoginRequiredError` / `JobuiCaptchaError`（wrapper 按脚本退出码 2/3 映射）。
+
+## 发布管线与网站（Week 6）
+
+本地分析结果发布为静态 JSON，网站经 jsDelivr CDN 只读加载
+（架构：`docs/06-website-architecture-v1.0.md`，分离式架构——采集/分析在本机，
+展示在云端静态页）。
+
+```bash
+# 一键季度发布：采集（失败不阻断）→ 生成 6 个 JSON → 推送 data 分支
+bash scripts/quarterly_publish.sh
+
+# 或只跑发布（默认 data/recruitment.db → data/publish/v1/）
+python -m data.publish.cli --db data/demo.db --out data/publish/v1
+
+# 单独校验已发布的 JSON
+python -m data.publish.format_check data/publish/v1
+```
+
+- 输出 6 个 JSON（schema 见架构 §3.2）：`manifest.json`（索引 + 动态 filters）/
+  `summary.json` / `salary_trends.json` / `job_ranking.json` /
+  `edu_exp_distribution.json` / `data_status.json`
+- 冻结约束：`core/`、`storage/`、`collectors/`、`importers/`、`analysis/` 源码零改动，
+  发布层只 import `analysis` 公开函数（`compute_yoy_qoq` / `analyze_keywords` /
+  `get_quarter_of` / `quarter_label`）；方向归属启发式与 `analysis.stats` 同口径平行实现
+- `chart_specs` 字段为 Plotly.js 直接可用的 `{type, data, layout}`，网站 `Plotly.react()` 渲染
+- 空库降级：只建表无岗位时仍输出合法 JSON（数值 0 / null、结构保留），format_check 全过
+- CDN 基础路径：`https://cdn.jsdelivr.net/gh/iskungfu/recruitment-data-tracker@data/publish/v1/`
+- 季度提醒：定时任务「季度采集提醒」（每季度首月 1 号 9:00 飞书提醒执行季度发布）
 
 ## 架构文档
 

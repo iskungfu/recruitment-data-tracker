@@ -1,0 +1,17 @@
+{
+  "kpi": {
+    "total_jobs": 60,
+    "avg_salary": {
+      "min": 22.33,
+      "max": 34.33,
+      "unit": "K/月"
+    },
+    "cities_covered": 1,
+    "directions_covered": 1,
+    "yoy_job_growth": null,
+    "qoq_salary_change": null
+  },
+  "top_direction_by_growth": null,
+  "top_direction_by_salary": "后端",
+  "latest_snapshot_date": "2026-09-23"
+}

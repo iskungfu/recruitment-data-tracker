@@ -61,4 +61,14 @@
 ### Added (Week 5 — cron 自动化)
 - 定时任务「招聘数据周报」（aily auto，autoUid `auto_4m43by07vtqa8`）：每周一 9:00 触发，已开闲时执行（凌晨预跑、9:00 投递）。流程：进入持久化项目目录（`~/.aily/workspace/recruitment-data-tracker`，缺失则从公开仓库克隆）→ `git pull origin develop` → `python -m analysis.report --compare` → compare_report.html 上传飞书云盘（命名「招聘数据周报 <日期>.html」）→ 任务评论区汇报本周数据概况（总岗位数 / 双平台岗位数 / 本季均值月薪 / 同比环比）
 
+### Added (Week 6 — 发布管线 + 网站，Phase 1)
+- `data/publish/cli.py`（`python -m data.publish.cli`）：发布编排——连 SQLite → 调 `compute_yoy_qoq`（overall / by_city / by_direction 三维度）→ 生成 6 个 JSON 到 `data/publish/v1/`：`manifest.json`（索引；`filters.cities/directions` 从 cities/keywords 表动态读取、不写死 12 个方向；`quarters` 从采集日期聚合）、`summary.json`（KPI + Top 方向）、`salary_trends.json`（方向/城市季度序列 + 本季同比环比，历史季度同比环比字段置 null）、`job_ranking.json`（方向排行 + share + top_cities + 技能 Top 20 词频）、`edu_exp_distribution.json`（学历/经验整体 + 按方向分布）、`data_status.json`（快照历史 + 薪资解析率/JD 率/去重率 + 采集日志）。冻结约束：`core/storage/collectors/importers/analysis` 零改动，仅 import analysis 公开函数；方向归属启发式与 `analysis.stats._attribute_direction` 同口径平行实现（私有函数不可 import）
+- `data/publish/format_check.py`（`python -m data.publish.format_check`）：6 个 JSON 的 schema 校验——必填字段存在、数值类型正确（bool 不算数值）、`chart_specs` 非空且含 Plotly `{data, layout}` 结构、`manifest.datasets` 与目录实际文件一一对应（多余 JSON 报错）
+- `scripts/quarterly_publish.sh`：季度一键发布——`python -m tracker collect || true`（采集失败不阻断）→ `python -m data.publish.cli` → `git add data/publish/v1/ && git commit && git push origin HEAD:data`（任意本地分支可推送远端 data 分支）
+- `chart_specs` 全部经 `fig.to_json()` 产出 Plotly.js 直接可用的 `{type, data, layout}`；方向对比分组柱状 / 城市薪资趋势折线 / 排行水平条形 / 技能高频条形 / 学历饼图 / 经验×方向堆叠柱状
+- 空库降级：只建表无岗位时仍输出 6 个合法 JSON（total_jobs=0、薪资/增长 null、manifest.version="empty"），format_check 全过
+- `tests/test_publish.py`：8 个测试——summary 字段与类型、salary JSON 与 SQLite 直算口径一致（含方向 qoq/yoy 数值）、manifest 与文件一一对应 + filters 动态读取（新增方向即时反映）、空库降级、format_check 负例（删字段/删文件必报错）、排行顺序/share/yoy、chart_specs Plotly 结构、采集质量口径（解析率 7/8、JD 率 4/8、去重率 0）
+- 定时任务「季度采集提醒」（aily auto cron `0 0 9 1 1,4,7,10 *`）：每季度首月 1 号 9:00 飞书提醒执行 `bash scripts/quarterly_publish.sh`
+- 全仓 176 个测试全绿（旧 168 + 新 8）
+
 ### Planned

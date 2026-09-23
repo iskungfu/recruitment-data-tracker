@@ -49,20 +49,16 @@ _TEMPLATE = Template("""<!DOCTYPE html>
 <body>
 <h1>招聘数据季度报告 · $current_quarter</h1>
 <p class="meta">范围：$scope ｜ 生成时间：$generated_at ｜ 数据源：job_snapshot（SQLite）</p>
+$jobui_note
 
 <div class="kpis">
-  <div class="kpi"><div class="label">总岗位数（全部季度）</div>
-    <div class="value">$kpi_total</div><div class="sub">本季 $kpi_quarter_count 条</div></div>
-  <div class="kpi"><div class="label">本季均值月薪（K/月，中点）</div>
-    <div class="value">$kpi_avg_salary</div><div class="sub">日薪/时薪岗不参与</div></div>
-  <div class="kpi"><div class="label">岗位数环比（QoQ）</div>
-    <div class="value">$kpi_qoq</div><div class="sub">同比 $kpi_yoy</div></div>
+$kpi_cards
 </div>
 
 <h2>五城岗位数排行（本季）</h2>
 $city_rank
 
-<h2>薪资趋势（分城市，月薪中点均值 K/月）</h2>
+<h2>$trend_title</h2>
 $chart_trend
 
 <h2>方向薪资对比（本季，均值 K/月）</h2>
@@ -216,6 +212,86 @@ def _total_count(conn: sqlite3.Connection, city: str | int | None) -> int:
     ).fetchone()["c"]
 
 
+def _jobui_count(conn: sqlite3.Connection, city: str | int | None) -> int:
+    """范围内 JOBUI 平台条目数（普通模式提示行 / 对比模式说明用）。"""
+    where, params = _city_filter_sql(conn, city)
+    row = conn.execute(
+        f"SELECT COUNT(*) AS c FROM job_snapshot j WHERE j.platform = ? {where}",
+        ["JOBUI", *params],
+    ).fetchone()
+    return int(row["c"])
+
+
+#: by_platform 键 → 报告展示名（compute_yoy_qoq 的平台键为小写）
+_PLATFORM_LABELS = {"boss": "BOSS 直聘", "jobui": "职友集 JOBUI"}
+
+
+def _kpi_card(label: str, value, sub: str) -> str:
+    return (
+        f"<div class='kpi'><div class='label'>{label}</div>"
+        f"<div class='value'>{value}</div><div class='sub'>{sub}</div></div>"
+    )
+
+
+def _kpi_cards_html(yoy: dict, total: int, compare: bool) -> str:
+    """KPI 卡片区 HTML——普通模式维持 Week 3 三卡口径，对比模式双平台独立 + 唯一岗位数。
+
+    by_platform 缺失的平台（如纯 BOSS 库里的 jobui）按 0 条 / — 兜底展示。
+    """
+    overall = yoy["overall"]
+    if not compare:
+        return "".join([
+            _kpi_card("总岗位数（全部季度）", total,
+                      f"本季 {overall['job_count'] if overall else 0} 条"),
+            _kpi_card("本季均值月薪（K/月，中点）",
+                      _fmt_salary(overall["avg_salary"]) if overall else "—",
+                      "日薪/时薪岗不参与"),
+            _kpi_card("岗位数环比（QoQ）",
+                      _fmt_pct(overall["qoq"]["job_count"]) if overall else "—",
+                      f"同比 {_fmt_pct(overall['yoy']['job_count']) if overall else '—'}"),
+        ])
+
+    by_pf = (overall or {}).get("by_platform", {})
+    cards = []
+    for key in ("boss", "jobui"):
+        stats = by_pf.get(key, {"job_count": 0, "avg_salary": None})
+        cards.append(_kpi_card(
+            f"{_PLATFORM_LABELS[key]}（本季）",
+            f"{stats['job_count']} 条",
+            f"均值月薪 {_fmt_salary(stats['avg_salary'])}",
+        ))
+    cards.append(_kpi_card(
+        "跨平台唯一岗位数（本季）",
+        (overall or {}).get("total_unique_jobs", 0),
+        "按 岗位名+公司+城市 归一哈希去重",
+    ))
+    return "".join(cards)
+
+
+def _quarterly_salary_by_platform(
+    conn: sqlite3.Connection, city: str | int | None
+) -> dict[tuple[str, str], dict[str, float]]:
+    """{(城市, 平台): {季度标签: 月薪中点均值}}，日薪/时薪不参与。"""
+    where, params = _city_filter_sql(conn, city)
+    rows = conn.execute(
+        "SELECT c.name AS city_name, j.platform, j.salary_min, j.salary_max, j.snapshot_date "
+        "FROM job_snapshot j JOIN cities c ON c.id = j.city_id "
+        "WHERE j.salary_unit = 'month' AND j.salary_min IS NOT NULL "
+        f"AND j.salary_max IS NOT NULL {where}",
+        params,
+    ).fetchall()
+    agg: dict[tuple[str, str], dict[tuple[int, int], list[float]]] = {}
+    for r in rows:
+        key = get_quarter_of(datetime.strptime(r["snapshot_date"], "%Y-%m-%d").date())
+        agg.setdefault((r["city_name"], r["platform"]), {}).setdefault(key, []).append(
+            (r["salary_min"] + r["salary_max"]) / 2
+        )
+    return {
+        (c, p): {quarter_label(k): sum(v) / len(v) for k, v in sorted(qs.items())}
+        for (c, p), qs in sorted(agg.items())
+    }
+
+
 def _fig_trend(series: dict[str, dict[str, float]]) -> go.Figure:
     """薪资趋势折线：x=季度，y=均值月薪中点，每城一条线。"""
     fig = go.Figure()
@@ -227,6 +303,27 @@ def _fig_trend(series: dict[str, dict[str, float]]) -> go.Figure:
         )
     fig.update_layout(height=380, margin=dict(l=40, r=20, t=30, b=40),
                       yaxis_title="K/月", legend_title="城市")
+    return fig
+
+
+def _fig_trend_compare(series: dict[tuple[str, str], dict[str, float]]) -> go.Figure:
+    """双平台叠放薪资趋势（Week 4 步骤三 P2）：每 (城市 × 平台) 一条线。
+
+    BOSS 实线、JOBUI 虚线，图例名 "城市·平台"——同一城市两平台并列可比。
+    """
+    fig = go.Figure()
+    quarters = sorted({q for qs in series.values() for q in qs})
+    for (city_name, platform), qs in series.items():
+        fig.add_trace(
+            go.Scatter(
+                x=quarters, y=[qs.get(q) for q in quarters],
+                mode="lines+markers", name=f"{city_name}·{platform}",
+                connectgaps=False,
+                line={"dash": "dash" if platform.upper() == "JOBUI" else "solid"},
+            )
+        )
+    fig.update_layout(height=380, margin=dict(l=40, r=20, t=30, b=40),
+                      yaxis_title="K/月", legend_title="城市·平台")
     return fig
 
 
@@ -305,13 +402,22 @@ def generate_report(
     db_path: str | Path,
     city: str | int | None = None,
     output_path: str | Path = DEFAULT_OUTPUT,
+    compare: bool = False,
 ) -> str:
     """生成单文件 HTML 季度报告，返回输出路径字符串。
 
-    内容：KPI 卡片（总岗位数 / 五城排行 / 本季均值月薪）、薪资趋势折线
-    （分城市）、方向薪资分组柱状、JD 高频词条形图、学历/经验分布饼图、
-    方向同比环比明细表。city 过滤口径与 compute_yoy_qoq 一致；
-    日薪/时薪岗位不参与所有薪资均值。
+    普通模式（compare=False，默认）：维持 Week 3 行为——KPI 卡片
+    （总岗位数 / 本季均值月薪 / 岗位数环比）、薪资趋势折线（分城市）、
+    方向薪资分组柱状、JD 高频词条形图、学历/经验分布饼图、方向同比环比
+    明细表。范围内有 JOBUI 条目时，报告头提示行引导使用 --compare 模式。
+
+    双平台对比模式（compare=True，Week 4 步骤三 P2）：KPI 卡片改为双平台
+    独立数据（BOSS / JOBUI 各自本季岗位数与均值月薪）+ 跨平台唯一岗位数
+    （job_name+company_name+city_id 归一哈希去重，报告层口径不落库）；
+    薪资趋势图双平台叠放（BOSS 实线、JOBUI 虚线，每 城市×平台 一条线）。
+    纯 BOSS 库（JOBUI 为 0）同样可出对比报告——JOBUI 卡按 0 条 / — 兜底。
+
+    city 过滤口径与 compute_yoy_qoq 一致；日薪/时薪岗位不参与所有薪资均值。
 
     Raises:
         FileNotFoundError: db_path 不存在时抛出（不静默创建空库文件）。
@@ -323,6 +429,7 @@ def generate_report(
     conn = _connect(db_path)
     try:
         total = _total_count(conn, city)
+        jobui_rows = _jobui_count(conn, city)
         if yoy["current_quarter"] is None:
             current_key = None
         else:
@@ -331,6 +438,7 @@ def generate_report(
                 int(yoy["current_quarter"][-1]),
             )
         trend = _quarterly_salary_by_city(conn, city)
+        trend_pf = _quarterly_salary_by_platform(conn, city) if compare else None
         rank = _city_rank_current(conn, current_key) if current_key else []
         direction_salary = (
             _direction_salary_current(conn, city, current_key) if current_key else []
@@ -341,9 +449,13 @@ def generate_report(
         conn.close()
 
     keywords = analyze_keywords(db_path, top_n=50)
+    if compare:
+        trend_fig = _fig_trend_compare(trend_pf or {})
+    else:
+        trend_fig = _fig_trend(trend)
     if keywords:
         figs = [
-            _fig_trend(trend),
+            trend_fig,
             _fig_direction(direction_salary),
             _fig_keywords(keywords),
             _fig_pie(edu, "学历"),
@@ -353,7 +465,7 @@ def generate_report(
     else:
         # 无 JD 全文（列表页采集未回填详情时 jd_fulltext 为空）→ 高频词区占位
         chart_trend, chart_direction, chart_edu, chart_exp = _to_divs(
-            [_fig_trend(trend), _fig_direction(direction_salary),
+            [trend_fig, _fig_direction(direction_salary),
              _fig_pie(edu, "学历"), _fig_pie(exp, "经验")]
         )
         chart_keywords = (
@@ -361,17 +473,32 @@ def generate_report(
             "无法统计高频词。JD 正文由采集层两阶段回填。</p>"
         )
 
-    overall = yoy["overall"]
     scope = "全部城市" if city is None else f"城市过滤：{city}"
+    if compare:
+        scope += "｜双平台对比模式"
+        jobui_note = (
+            "<p class='meta'>双平台对比：BOSS 与 JOBUI 独立统计；唯一岗位数按"
+            " 岗位名+公司+城市 归一哈希跨平台去重（仅报告层口径，不落库）。</p>"
+        )
+    elif jobui_rows > 0:
+        jobui_note = (
+            f"<p class='meta'>含 {jobui_rows} 个 JOBUI 聚合条目，"
+            "请参考 --compare 模式跨平台对比</p>"
+        )
+    else:
+        jobui_note = ""
+    trend_title = (
+        "薪资趋势（分城市 × 平台：BOSS 实线、JOBUI 虚线，月薪中点均值 K/月）"
+        if compare else
+        "薪资趋势（分城市，月薪中点均值 K/月）"
+    )
     html = _TEMPLATE.substitute(
         scope=scope,
         current_quarter=yoy["current_quarter"] or "暂无数据",
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
-        kpi_total=total,
-        kpi_quarter_count=overall["job_count"] if overall else 0,
-        kpi_avg_salary=_fmt_salary(overall["avg_salary"]) if overall else "—",
-        kpi_qoq=_fmt_pct(overall["qoq"]["job_count"]) if overall else "—",
-        kpi_yoy=_fmt_pct(overall["yoy"]["job_count"]) if overall else "—",
+        jobui_note=jobui_note,
+        kpi_cards=_kpi_cards_html(yoy, total, compare),
+        trend_title=trend_title,
         city_rank=_city_rank_html(rank),
         chart_trend=chart_trend,
         chart_direction=chart_direction,
@@ -386,13 +513,25 @@ def generate_report(
 
 
 def main() -> None:
-    """CLI：python -m analysis.report [db_path] [output]"""
+    """CLI：python -m analysis.report [db_path] [output] [--compare]"""
+    import argparse
     import sys
 
-    db = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/recruitment.db")
-    out = Path(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_OUTPUT
+    parser = argparse.ArgumentParser(
+        prog="python -m analysis.report", description="生成单文件 HTML 季度报告")
+    parser.add_argument("db_path", nargs="?", default="data/recruitment.db",
+                        help="SQLite 数据库路径（默认 data/recruitment.db）")
+    parser.add_argument("output", nargs="?", default=None,
+                        help="输出 HTML 路径（默认 report.html；--compare 时 compare_report.html）")
+    parser.add_argument("--compare", action="store_true",
+                        help="双平台对比模式：KPI 双平台独立数据 + 唯一岗位数，趋势图双平台叠放")
+    args = parser.parse_args()
+
+    db = Path(args.db_path)
+    default_out = Path("compare_report.html") if args.compare else DEFAULT_OUTPUT
+    out = Path(args.output) if args.output is not None else default_out
     try:
-        path = generate_report(db, output_path=out)
+        path = generate_report(db, output_path=out, compare=args.compare)
     except FileNotFoundError as e:
         print(f"错误: {e}", file=sys.stderr)
         sys.exit(1)

@@ -39,7 +39,7 @@ from core.salary import normalize_city_name
 from importers.boss_importer import read_scraper_json
 from storage.connection import get_connection, transaction
 from storage.dao import get_existing_keys
-from storage.schema import MIGRATION_DIR
+from storage.schema import MIGRATION_DIR, apply_migration_script
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +65,8 @@ _RANGE_RE = re.compile(
 )
 # "8000元以上" / "8k以上" / "1.5万以上"
 _ABOVE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(万|k|K)?\s*元?\s*以上\s*$")
+# "200元/天" / "300/天" —— 单值日薪（P3-3：此前落入默认 month 分支）
+_SINGLE_DAY_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*元?\s*/\s*天\s*$")
 _NEGOTIABLE = ("面议", "面谈")
 
 _K_PER_UNIT = {"万": 10.0, "k": 1.0, "K": 1.0, None: 0.001}
@@ -112,6 +114,11 @@ def parse_jobui_salary(raw: str | None) -> JobuiSalary:
             unit="month", year_multiplier=12, raw=raw,
         )
 
+    # P3-3 修复：单值日薪 "200元/天" 此前落入默认 month 分支；
+    # 对齐区间日薪语义——unit='day'、min/max 不折算（数值置空）
+    if _SINGLE_DAY_RE.match(text):
+        return JobuiSalary(min=None, max=None, unit="day", year_multiplier=None, raw=raw)
+
     log.warning("职友集薪资无法解析，保留原文、数值置空: %r", raw)
     return default
 
@@ -131,13 +138,16 @@ class JobuiJobSnapshot(JobSnapshot):
 def ensure_source_columns(conn) -> None:
     """确保 job_snapshot 已有 source_platform / source_url 列（migration 0002）。
 
-    幂等：已有列直接返回；缺失时执行迁移文件（ALTER + schema_version 记录）。
+    幂等且自愈（P3-5 修复）：列与版本记录任一缺失时重放迁移——
+    ALTER 前逐列 PRAGMA 检查、已存在跳过（半迁移中断的库直接补齐，
+    列被删的旧库补列），版本记录 INSERT OR IGNORE（列齐但版本未记的库补记录）。
     旧库（0002 应用前初始化的 DB）首次经本 importer 入库时自动补列。
     """
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(job_snapshot)")}
-    if {"source_platform", "source_url"} <= cols:
+    recorded = {int(r[0]) for r in conn.execute("SELECT version FROM schema_version")}
+    if {"source_platform", "source_url"} <= cols and 2 in recorded:
         return
-    conn.executescript(MIGRATION_0002.read_text(encoding="utf-8"))
+    apply_migration_script(conn, MIGRATION_0002.read_text(encoding="utf-8"))
 
 
 def parse_jobui_record(raw: dict, city_id: int | None, snapshot_date: date) -> JobuiJobSnapshot:
@@ -185,11 +195,14 @@ def import_json_to_db(
     city_id: int | None,
     snapshot_date: date,
     conn,
-) -> int:
+) -> tuple[int, int]:
     """单个职友集 JSON 入库：读取 → 逐条解析 → dedup → INSERT OR IGNORE。
 
     入库前自动执行 ensure_source_columns()（旧库自动补列）。
-    返回：新插入数量。
+    返回：(新插入数量, 解析成功条数)。
+
+    P3-2 修复：解析成功条数与插入数分开返回——重复数应为
+    parsed_total - inserted，不能把解析失败条目算进重复（混计口径错误）。
     """
     ensure_source_columns(conn)
     records = read_scraper_json(json_path)
@@ -199,6 +212,7 @@ def import_json_to_db(
             jobs.append(parse_jobui_record(raw, city_id, snapshot_date))
         except (SchemaIncompatibleError, ValueError) as e:
             log.warning("跳过无法解析的职友集记录: %s", e)
+    parsed_total = len(jobs)
 
     existing = get_existing_keys(conn, snapshot_date)
     deduped = dedup_jobs(jobs, existing)
@@ -208,9 +222,9 @@ def import_json_to_db(
     inserted = conn.total_changes - before
     log.info(
         "导入职友集 %s: 原始 %d 条 → 解析 %d 条 → 去重后 %d 条 → 新插入 %d 条",
-        json_path, len(records), len(jobs), len(deduped), inserted,
+        json_path, len(records), parsed_total, len(deduped), inserted,
     )
-    return inserted
+    return inserted, parsed_total
 
 
 def import_batch(
@@ -221,8 +235,11 @@ def import_batch(
     职友集口径（裁决）：城市未匹配 → city_id 置 NULL 照常入库（不丢记录，
     区别于 BOSS importer 的跳过整份文件）。
     返回：{"total": N, "new": M, "duplicates": D, "unknown_city": U}
+
+    P3-2 修复：duplicates = 解析成功总数 - 新插入数，
+    不把解析失败条目混进重复计数。
     """
-    total = new = unknown_city_files = 0
+    total = new = parsed_total = unknown_city_files = 0
     for path in json_paths:
         records = read_scraper_json(path)
         if not records:
@@ -237,9 +254,11 @@ def import_batch(
             log.warning("未收录的城市 %r（文件 %s），city_id 置 NULL 照常入库", city_name, path)
             unknown_city_files += 1
         total += len(records)
-        new += import_json_to_db(path, city_id, snapshot_date, conn)
+        inserted, parsed = import_json_to_db(path, city_id, snapshot_date, conn)
+        new += inserted
+        parsed_total += parsed
     return {
-        "total": total, "new": new, "duplicates": total - new,
+        "total": total, "new": new, "duplicates": parsed_total - new,
         "unknown_city": unknown_city_files,
     }
 

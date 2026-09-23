@@ -18,7 +18,9 @@
     约 10-15 分钟自动解封；登录仅支持微信扫码（首版匿名采集）。
   - 详情页 /job/<id>/ 为跳转页（无 JD 正文）→ jd_fulltext 统一 NULL。
 
-限速（组长裁决）：批次内相邻两次搜索之间 sleep uniform(5, 10) 秒。
+限速（组长裁决）：批次内相邻两次搜索之间 sleep
+max(batch_delay_sec, uniform(5, 10)) 秒——batch_delay_sec 数值仅作下限/开关，
+实际等待至少 5-10 秒随机（JOBUI 反爬比 BOSS 严格，不能只等固定值）。
 settings.batch_delay_sec == 0 视为测试模式，不等待（与 BOSS 批次约定一致）。
 """
 
@@ -245,7 +247,8 @@ def run_scraper_batch(
 ) -> list[Path]:
     """多轮渐进：遍历 (keyword × city)，逐次调用 run_scraper()。
 
-    相邻两次搜索之间 sleep uniform(5, 10) 秒（组长裁决的限速）；
+    相邻两次搜索之间 sleep max(batch_delay_sec, uniform(5, 10)) 秒
+    （组长裁决的限速；batch_delay_sec 数值仅作下限/开关，实际至少随机 5-10 秒）；
     settings.batch_delay_sec == 0 视为测试模式不等待（与 BOSS 批次约定一致）。
     单个组合失败（含登录墙/验证码）记录日志后继续，不中断整批；
     返回成功的 JSON 路径列表。
@@ -263,7 +266,9 @@ def run_scraper_batch(
         except (ScraperError, JobuiLoginRequiredError, JobuiCaptchaError) as e:
             log.error("jobui 采集失败（跳过，继续下一组合）: %s", e)
         if i < len(combos) - 1 and settings.batch_delay_sec > 0:
-            time.sleep(random.uniform(5, 10))
+            # P3-1 修复：JOBUI 批次忽略 batch_delay_sec 数值 → 取 max 作下限，
+            # 值仅作开关（0 = 测试模式不等待），实际至少随机 5-10 秒
+            time.sleep(max(settings.batch_delay_sec, random.uniform(5, 10)))
     return results
 
 

@@ -8,6 +8,7 @@ www.jobui.com/jobs?cityKw=北京&jobKw=后端 的真实服务端渲染 HTML 原�
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -171,6 +172,35 @@ class TestRunScraperBatch:
         paths = run_scraper_batch(["后端"], ["北京", "上海"], jobui_settings)
         assert len(paths) == 2
         assert all(p.is_file() for p in paths)
+
+    def test_batch_delay_takes_max_of_setting_and_random(self, jobui_settings, jobui_env,
+                                                          monkeypatch):
+        """P3-1 回归：JOBUI 批次 sleep max(batch_delay_sec, uniform(5, 10))。
+
+        batch_delay_sec 数值只作下限/开关（0 = 测试模式不等待）：
+        - 值大于随机值（如 120）→ 睡满 120（旧实现只睡 5-10 秒，忽略设置值）；
+        - 值小于随机值（如 3）→ 睡随机值。
+        """
+        import collectors.jobui_scraper as mod
+
+        sleeps = []
+        monkeypatch.setattr(mod.time, "sleep", lambda s: sleeps.append(s))
+        monkeypatch.setattr(mod.random, "uniform", lambda a, b: 7.5)
+
+        # 2 个成功组合 → 1 次间隔 sleep
+        s120 = replace(jobui_settings, batch_delay_sec=120)
+        run_scraper_batch(["后端"], ["北京", "上海"], s120)
+        assert sleeps == [120]              # max(120, 7.5) = 120
+
+        sleeps.clear()
+        s3 = replace(jobui_settings, batch_delay_sec=3)
+        run_scraper_batch(["后端"], ["北京", "上海"], s3)
+        assert sleeps == [7.5]               # max(3, 7.5) = 7.5
+
+        sleeps.clear()
+        s0 = replace(jobui_settings, batch_delay_sec=0)
+        run_scraper_batch(["后端"], ["北京", "上海"], s0)
+        assert sleeps == []                 # 0 = 测试模式不等待
 
 
 class TestCheckInstalled:

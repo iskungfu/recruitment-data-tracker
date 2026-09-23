@@ -43,6 +43,17 @@
 - 依赖：`lxml>=4.9` 写入 pyproject dependencies（playwright 为采集脚本可选运行时依赖，不进测试路径）
 - 实测：`python -m storage.schema` → `python -m importers.jobui_importer`（真实样本 20 条）端到端跑通；149 个测试全绿（旧 103 + 新 46）
 
+### Added (Week 4 步骤三 — --compare 双平台对比 + P2 平台拆分)
+- `analysis/stats.py`：`compute_yoy_qoq` 三维度（overall / by_city / by_direction）每项新增 `by_platform` 子结构（`{"boss": {...}, "jobui": {...}}`，job_count / avg_salary 分平台统计，同一行循环内并行聚合）；`overall` 顶部新增 `total_unique_jobs`（本季，按 job_name+company_name+city_id 归一 sha1 哈希跨平台去重，仅报告层统计口径、不落库）；无数据平台不出现在 by_platform，报告层缺平台回退 0 条/—
+- `analysis/report.py`：`--compare` 模式（argparse CLI）产出双平台对比报告——KPI 卡片分平台独立数据（条数 + 均值月薪）+ 跨平台唯一岗位数卡片；薪资趋势图双平台叠放（每 城市×平台 一条线，BOSS 实线 / JOBUI 虚线，图例「城市·平台」）；报告头注明去重口径与「不落库」。普通模式保持 Week 3 三卡片行为不变，JOBUI 聚合条目 >0 时报告头加一行「含 N 个 JOBUI 聚合条目，请参考 --compare 模式跨平台对比」；compare 模式默认输出 `compare_report.html`
+- P3-1 `collectors/jobui_scraper.py`：JOBUI 批次限速改为 `time.sleep(max(batch_delay_sec, random.uniform(5, 10)))`——原实现忽略配置数值；该值现仅作开关（0 = 测试模式不等待）/下限
+- P3-2 `importers/jobui_importer.py`：`import_json_to_db` 返回 `(inserted, parsed_total)`，`import_batch` 的 `duplicates = parsed_total - inserted`——解析失败不再混入重复计数
+- P3-3 `importers/jobui_importer.py`：单值日薪（"200元/天"/"300/天"/"150.5元/天"）新增正则识别 → `unit='day'`、min/max NULL，不再默认落 month
+- P3-4 `analysis/stats.py`：`by_city` 城市 NULL 时桶名由字面 `"city_None"` 改为 `row["city_name"] or (f"city_{city_id}" if city_id else "未知城市")`
+- P3-5 `storage/schema.py`：新增 `apply_migration_script`（语句拆分 + 事务包裹 + 逐条 `ALTER TABLE ADD COLUMN` 前 PRAGMA table_info 列检查，列存在跳过）；`apply_pending_migrations` 与 importer 的 `ensure_source_columns` 均改走该入口——半迁移窗口（两列间崩溃：列在版本未记）重跑自愈，不再报 duplicate column；`ensure_source_columns` 早退条件收紧为「列齐且版本已记」
+- `scripts/jobui_cdp_raw.py`：清理口径修复——只 `page.close()`，仅自建 context 分支才 `context.close()`（复用用户真实 Chrome 默认 context 时不再误关整个浏览器上下文）
+- `tests/`：18 个新测试——平台拆分口径（分平台 job_count/avg_salary、total_unique_jobs sha1 公式锁定、纯 BOSS 库、NULL city_id 样本进「未知城市」桶）、--compare 报告（KPI 双平台卡片 + 唯一岗位数 HTML、趋势图 trace 名/虚实线在 Figure 对象上断言、纯 BOSS 库回退、普通模式三卡片 + 提示行、CLI subprocess）、P3 回归（限速 max 语义、解析失败不入 duplicates、单值日薪参数化、半迁移自愈两条路径）
+- 实测：149 + 18 = 167 个测试全绿；`python -m analysis.report --compare data/demo.db` 产出对比报告（纯 BOSS 库回退正常：JOBUI 0 条/—，唯一岗位数 60 = 条数）；Chromium 渲染验证双平台混合库（60 BOSS + 20 JOBUI 同季）KPI 三卡片与双平台叠放趋势图清晰
+
 ### Planned
-- Week 4：职友集采集 + 跨平台对比
 - Week 5：cron 自动化 + CI 健康检查

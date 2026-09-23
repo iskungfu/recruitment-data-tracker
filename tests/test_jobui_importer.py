@@ -21,6 +21,7 @@ from importers.jobui_importer import (
     parse_jobui_record,
     parse_jobui_salary,
 )
+from storage.schema import apply_pending_migrations
 from tests.conftest import SNAPSHOT_DATE
 
 DATE = SNAPSHOT_DATE
@@ -103,6 +104,22 @@ class TestParseJobuiSalary:
         assert s.raw == "薪资丰厚"
         assert s.unit == "month"  # 不丢整条记录
 
+    def test_single_value_day_salary(self):
+        """P3-3 回归：单值日薪 "200元/天" 不再落入默认 month 分支。
+
+        对齐区间日薪语义：unit='day'、min/max 不折算（置空）。
+        """
+        s = parse_jobui_salary("200元/天")
+        assert s.unit == "day"
+        assert s.min is None and s.max is None
+        assert s.year_multiplier is None
+        assert s.raw == "200元/天"
+
+    @pytest.mark.parametrize("raw", ["300/天", "150.5元/天"])
+    def test_single_day_variants(self, raw):
+        """P3-3 回归：省略"元"与小数写法同口径"""
+        assert parse_jobui_salary(raw).unit == "day"
+
 
 class TestParseJobuiRecord:
     """edu/exp 原文照存 + encrypt 前缀 + 来源站字段 + jd 统一 NULL"""
@@ -157,13 +174,66 @@ class TestEnsureSourceColumns:
         cols = {r["name"] for r in db_conn.execute("PRAGMA table_info(job_snapshot)")}
         assert {"source_platform", "source_url"} <= cols
 
+    def test_half_migrated_db_recovers_via_apply_pending(self, db_conn):
+        """P3-5 回归：两条 ALTER 之间中断（第一列已加、版本未记）→
+        重跑 apply_pending_migrations 不再报 duplicate column，且补齐缺口。"""
+        db_conn.execute("ALTER TABLE job_snapshot DROP COLUMN source_platform")
+        db_conn.execute("ALTER TABLE job_snapshot DROP COLUMN source_url")
+        db_conn.execute("DELETE FROM schema_version WHERE version = 2")
+        # 模拟半迁移：第一条 ALTER 成功后进程中断（版本未记、source_url 未加）
+        db_conn.execute("ALTER TABLE job_snapshot ADD COLUMN source_platform TEXT")
+        db_conn.commit()
+
+        apply_pending_migrations(db_conn)  # 旧实现此处抛 duplicate column name
+
+        cols = {r["name"] for r in db_conn.execute("PRAGMA table_info(job_snapshot)")}
+        assert "source_url" in cols
+        versions = {r["version"] for r in db_conn.execute("SELECT version FROM schema_version")}
+        assert 2 in versions
+
+    def test_half_migrated_healed_by_ensure_source_columns(self, db_conn):
+        """P3-5 回归：importer 侧自愈——列在但版本未记时重放迁移（跳过已有列）"""
+        db_conn.execute("ALTER TABLE job_snapshot DROP COLUMN source_url")
+        db_conn.execute("DELETE FROM schema_version WHERE version = 2")
+        db_conn.commit()
+
+        ensure_source_columns(db_conn)
+
+        cols = {r["name"] for r in db_conn.execute("PRAGMA table_info(job_snapshot)")}
+        assert "source_url" in cols
+        versions = {r["version"] for r in db_conn.execute("SELECT version FROM schema_version")}
+        assert 2 in versions
+
+
+class TestImportCountsP3:
+    """P3-2 回归：duplicates = 解析成功总数 - 新插入数，不混入解析失败条目"""
+
+    def test_duplicates_exclude_parse_failures(self, db_conn, tmp_path, city_id_lookup):
+        bad = _job("8-15k")
+        bad.pop("job_id")
+        bad.pop("detail_url")          # 无 job_id 且无 detail_url → 解析失败跳过
+        path = _write_json(
+            tmp_path,
+            [_job("8-15k"), _job("20-30k", job_id="900000100"), bad],
+        )
+        result = import_batch([path], city_id_lookup, DATE, db_conn)
+        assert result["total"] == 3            # 原始 3 条
+        assert result["new"] == 2              # 可解析的 2 条全部新插入
+        assert result["duplicates"] == 0       # 解析失败不计入重复（旧口径会算成 1）
+
+        result2 = import_batch([path], city_id_lookup, DATE, db_conn)
+        assert result2["new"] == 0
+        assert result2["duplicates"] == 2       # 重复只含可解析的 2 条
+        assert result2["total"] == 3
+
 
 class TestImportJsonToDb:
     def test_end_to_end_source_columns_written(self, db_conn, tmp_path):
         """端到端：入库后 source_platform/source_url 列可读，薪资为 K 口径"""
         path = _write_json(tmp_path, [_job("35000-50000元")])
-        new = import_json_to_db(path, city_id=1, snapshot_date=DATE, conn=db_conn)
+        new, parsed = import_json_to_db(path, city_id=1, snapshot_date=DATE, conn=db_conn)
         assert new == 1
+        assert parsed == 1
         row = db_conn.execute(
             "SELECT * FROM job_snapshot WHERE encrypt_job_id = 'jobui_900000099'"
         ).fetchone()
@@ -190,7 +260,7 @@ class TestImportJsonToDb:
         assert boss_import(boss_path, city_id=1, snapshot_date=DATE, conn=db_conn) == 1
 
         jobui_path = _write_json(tmp_path, [_job("8-15k")])
-        assert import_json_to_db(jobui_path, city_id=1, snapshot_date=DATE, conn=db_conn) == 1
+        assert import_json_to_db(jobui_path, city_id=1, snapshot_date=DATE, conn=db_conn) == (1, 1)
 
         rows = db_conn.execute(
             "SELECT platform, salary_min, salary_max FROM job_snapshot ORDER BY platform"
@@ -219,8 +289,8 @@ class TestImportJsonToDb:
 
     def test_reimport_same_day_dedups(self, db_conn, tmp_path):
         path = _write_json(tmp_path, [_job("8-15k")])
-        assert import_json_to_db(path, city_id=1, snapshot_date=DATE, conn=db_conn) == 1
-        assert import_json_to_db(path, city_id=1, snapshot_date=DATE, conn=db_conn) == 0
+        assert import_json_to_db(path, city_id=1, snapshot_date=DATE, conn=db_conn) == (1, 1)
+        assert import_json_to_db(path, city_id=1, snapshot_date=DATE, conn=db_conn) == (0, 1)
 
 
 class TestCliMain:

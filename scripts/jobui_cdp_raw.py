@@ -94,8 +94,15 @@ def collect(keyword: str, city: str, cdp_port: int, nav_wait_sec: float = 4.0) -
     """
     pw, browser = _connect_browser(cdp_port)
     context = None
+    page = None
+    own_context = False
     try:
-        context = browser.contexts[0] if browser.contexts else browser.new_context()
+        if browser.contexts:
+            # 用户真实 Chrome 的默认 context——绝不能整个 close（会关掉用户其它标签页）
+            context = browser.contexts[0]
+        else:
+            context = browser.new_context()
+            own_context = True
         page = context.new_page()
         page.set_default_timeout(45000)
 
@@ -129,10 +136,19 @@ def collect(keyword: str, city: str, cdp_port: int, nav_wait_sec: float = 4.0) -
         html = page.content()
         return parse_list_html(html, page.url)
     finally:
-        try:
-            context.close()
-        except Exception:
-            pass
+        # 验证缺口修复：只关自己开的 page；仅自建 context 分支才 close context
+        # （browser.contexts[0] 是用户真实 Chrome 的默认 context，整体关闭
+        #   会连带关掉用户的其它标签页）
+        if page is not None:
+            try:
+                page.close()
+            except Exception:
+                pass
+        if own_context and context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
         browser.close()
         pw.stop()
 

@@ -33,6 +33,8 @@ data/*.db
 data/*.db-shm
 data/*.db-wal
 data/report.html
+report.html
+compare_report.html
 data/reports/
 data/logs/
 .preview/

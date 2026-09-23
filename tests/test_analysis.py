@@ -194,6 +194,174 @@ class TestReport:
         assert Path(out).stat().st_size > 1024
 
 
+
+# ================================================================
+# Week 4 步骤三：P2 平台拆分 / total_unique_jobs / --compare 报告 / P3-4
+# ================================================================
+
+#: 双平台探针数据（本季 2026-09-23，全在北京，月薪中点）：
+#: b1 与 j1 为同一岗位（同名+同公司+同城）在两平台各采一条 → 跨平台双计
+_MIXED = [
+    # (eid, job_name, raw, lo, hi, unit, city_id, company, platform)
+    ("b1", "Java后端工程师", "30-60K", 30.0, 60.0, "month", 1, "测试公司", "BOSS"),
+    ("j1", "Java后端工程师", "25-35K", 25.0, 35.0, "month", 1, "测试公司", "JOBUI"),
+    ("b2", "Python后端工程师", "10-20K", 10.0, 20.0, "month", 1, "另一公司", "BOSS"),
+]
+
+
+@pytest.fixture()
+def mixed_db(tmp_path: Path) -> Path:
+    """BOSS + JOBUI 混合库（本季 3 条，其中 1 条跨平台重复）"""
+    db = tmp_path / "mixed.db"
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    create_tables(conn)
+    for eid, name, raw, lo, hi, unit, city_id, company, platform in _MIXED:
+        conn.execute(
+            _INSERT,
+            (eid, name, raw, lo, hi, None, unit, city_id, company,
+             "本科", "3-5年", None, "[]", platform, eid, "2026-09-23"),
+        )
+    conn.commit()
+    conn.close()
+    return db
+
+
+class TestPlatformSplit:
+    """P2：by_platform 子结构 + total_unique_jobs（sha1 归一哈希，报告层口径）"""
+
+    def test_overall_by_platform_and_unique(self, mixed_db):
+        r = compute_yoy_qoq(mixed_db)["overall"]
+        assert r["job_count"] == 3
+        assert r["avg_salary"] == pytest.approx(30.0)       # (45+30+15)/3
+        assert r["by_platform"] == {
+            "boss": {"job_count": 2, "avg_salary": pytest.approx(30.0)},   # (45+15)/2
+            "jobui": {"job_count": 1, "avg_salary": pytest.approx(30.0)},   # 30
+        }
+        # b1 与 j1 同名+同公司+同城 → 跨平台只算 1 个唯一岗位
+        assert r["total_unique_jobs"] == 2
+
+    def test_by_city_by_direction_by_platform(self, mixed_db):
+        r = compute_yoy_qoq(mixed_db)
+        bj = r["by_city"]["北京"]
+        assert bj["by_platform"]["boss"]["job_count"] == 2
+        assert bj["by_platform"]["jobui"]["job_count"] == 1
+        backend = r["by_direction"]["后端"]
+        assert backend["by_platform"]["boss"]["job_count"] == 2
+        assert backend["by_platform"]["jobui"]["job_count"] == 1
+
+    def test_unique_jobs_matches_sha1_spec(self, mixed_db):
+        """去重口径锁定：sha1(f"{job_name}|{company_name}|{city_id}")，可复算"""
+        import hashlib
+        expect = len({
+            hashlib.sha1(e.encode()).hexdigest()
+            for e in ("Java后端工程师|测试公司|1", "Python后端工程师|另一公司|1")
+        })
+        assert compute_yoy_qoq(mixed_db)["overall"]["total_unique_jobs"] == expect
+
+    def test_pure_boss_db_by_platform(self, analysis_db):
+        """纯 BOSS 库：by_platform 只含 boss；唯一数 = 本季岗位数（无跨平台重复）"""
+        r = compute_yoy_qoq(analysis_db)
+        assert set(r["overall"]["by_platform"]) == {"boss"}
+        assert r["overall"]["total_unique_jobs"] == r["overall"]["job_count"]
+
+    def test_null_city_bucket_is_unknown_city(self, tmp_path):
+        """P3-4 回归：city_id NULL 的岗位归入「未知城市」，不再产出 city_None 字面桶"""
+        db = tmp_path / "nullcity.db"
+        conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
+        create_tables(conn)
+        conn.execute(
+            _INSERT,
+            ("n1", "神秘岗位", "10-20K", 10.0, 20.0, None, "month",
+             None, "公司", "本科", "1-3年", None, "[]", "JOBUI",
+             "n1", "2026-09-23"),
+        )
+        conn.commit()
+        conn.close()
+        r = compute_yoy_qoq(db)
+        assert "city_None" not in r["by_city"]
+        assert r["by_city"]["未知城市"]["job_count"] == 1
+        assert r["by_city"]["未知城市"]["by_platform"] == {
+            "jobui": {"job_count": 1, "avg_salary": pytest.approx(15.0)}
+        }
+
+
+class TestCompareReport:
+    """--compare 双平台对比报告 + 普通模式 JOBUI 提示行"""
+
+    def test_compare_kpis_and_platform_trend(self, mixed_db, tmp_path):
+        out = generate_report(mixed_db, output_path=tmp_path / "cmp.html", compare=True)
+        html = Path(out).read_text(encoding="utf-8")
+        # KPI：双平台独立数据 + 唯一岗位数
+        assert "BOSS 直聘（本季）</div><div class='value'>2 条</div>" in html
+        assert "职友集 JOBUI（本季）</div><div class='value'>1 条</div>" in html
+        assert "跨平台唯一岗位数（本季）</div><div class='value'>2</div>" in html
+        # 趋势图区切换为双平台叠放标题（plotly trace 名做了 unicode 转义，
+        # 图层结构在 test_fig_trend_compare_traces 里对 figure 对象断言）
+        assert "薪资趋势（分城市 × 平台：BOSS 实线、JOBUI 虚线" in html
+        assert "双平台对比模式" in html
+        # 普通模式三卡口径不在对比报告里
+        assert "总岗位数（全部季度）" not in html
+
+    def test_fig_trend_compare_traces(self, mixed_db):
+        """对比模式趋势图：每 (城市×平台) 一条线，BOSS 实线 / JOBUI 虚线"""
+        from analysis.report import (
+            _connect,
+            _fig_trend_compare,
+            _quarterly_salary_by_platform,
+        )
+
+        conn = _connect(mixed_db)
+        try:
+            series = _quarterly_salary_by_platform(conn, None)
+        finally:
+            conn.close()
+        assert set(series) == {("北京", "BOSS"), ("北京", "JOBUI")}
+        fig = _fig_trend_compare(series)
+        assert {t.name for t in fig.data} == {"北京·BOSS", "北京·JOBUI"}
+        dash = {t.name: t.line.dash for t in fig.data}
+        assert dash["北京·BOSS"] == "solid"
+        assert dash["北京·JOBUI"] == "dash"
+
+    def test_compare_pure_boss_db_zero_jobui(self, analysis_db, tmp_path):
+        """纯 BOSS 库出对比报告：JOBUI 卡按 0 条 / — 兜底，不报错"""
+        out = generate_report(analysis_db, output_path=tmp_path / "cmp.html", compare=True)
+        html = Path(out).read_text(encoding="utf-8")
+        assert (
+            "职友集 JOBUI（本季）</div><div class='value'>0 条</div>"
+            "<div class='sub'>均值月薪 —</div>" in html
+        )
+        assert "跨平台唯一岗位数（本季）</div><div class='value'>4</div>" in html
+
+    def test_normal_mode_keeps_week3_behavior_with_jobui_note(self, mixed_db, tmp_path):
+        out = generate_report(mixed_db, output_path=tmp_path / "n.html")
+        html = Path(out).read_text(encoding="utf-8")
+        assert "含 1 个 JOBUI 聚合条目，请参考 --compare 模式跨平台对比" in html
+        assert "总岗位数（全部季度）" in html            # 三卡口径不变
+        assert "跨平台唯一岗位数" not in html
+
+    def test_normal_mode_pure_boss_no_note(self, analysis_db, tmp_path):
+        out = generate_report(analysis_db, output_path=tmp_path / "n2.html")
+        html = Path(out).read_text(encoding="utf-8")
+        assert "JOBUI 聚合条目" not in html
+
+    def test_report_cli_compare_flag(self, mixed_db, tmp_path):
+        """python -m analysis.report --compare <db> <out> 产出双平台对比报告"""
+        import subprocess
+        import sys
+
+        out = tmp_path / "cli_cmp.html"
+        r = subprocess.run(
+            [sys.executable, "-m", "analysis.report", "--compare", str(mixed_db), str(out)],
+            capture_output=True, text=True, timeout=180,
+        )
+        assert r.returncode == 0, r.stderr
+        assert out.is_file() and out.stat().st_size > 1024
+        html = out.read_text(encoding="utf-8")
+        assert "跨平台唯一岗位数（本季）" in html
+
+
     def test_missing_db_no_side_effect(self, tmp_path):
         """P2 修复：DB 不存在 → FileNotFoundError，且不静默创建空文件
 

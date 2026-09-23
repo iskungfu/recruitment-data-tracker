@@ -2,10 +2,12 @@
 
 Week 2 范围：季度归属 + 同比/环比计算（dataclass 层，calculate_yoy_qoq）。
 Week 3 范围：DB 层 compute_yoy_qoq（overall / by_city / by_direction 三维度）。
+Week 4 步骤三：by_platform 平台拆分子结构 + total_unique_jobs 跨平台去重 KPI。
 """
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from dataclasses import replace
 from datetime import date
@@ -149,7 +151,12 @@ def compute_yoy_qoq(db_path: str | Path, city: str | int | None = None) -> dict:
         }
         每个维度桶：{"current_quarter", "job_count", "avg_salary",
                      "qoq": {"job_count", "avg_salary"},
-                     "yoy": {"job_count", "avg_salary"}}
+                     "yoy": {"job_count", "avg_salary"},
+                     "by_platform": {"boss": {"job_count", "avg_salary"},
+                                     "jobui": {...}}}   # Week 4 步骤三 P2
+        overall 额外带 total_unique_jobs：本季跨平台唯一岗位数
+        （job_name+company_name+city_id 归一 sha1 哈希去重，仅报告层口径）。
+        by_platform 只含有数据的平台，报告层对缺失平台按 0 / None 兜底。
         分母缺失或为 0 → 对应百分比为 None。avg_salary 只计月薪岗
         （salary_unit='month'），取 (salary_min+salary_max)/2 的均值。
 
@@ -176,8 +183,9 @@ def compute_yoy_qoq(db_path: str | Path, city: str | int | None = None) -> dict:
                 where, params = "WHERE j.city_id = ?", [row["id"]]
 
         rows = conn.execute(
-            f"SELECT j.city_id, c.name AS city_name, j.job_name, "
-            f"       j.salary_min, j.salary_max, j.salary_unit, j.snapshot_date "
+            f"SELECT j.city_id, c.name AS city_name, j.job_name, j.company_name, "
+            f"       j.platform, j.salary_min, j.salary_max, j.salary_unit, "
+            f"       j.snapshot_date "
             f"FROM job_snapshot j LEFT JOIN cities c ON c.id = j.city_id {where}",
             params,
         ).fetchall()
@@ -207,19 +215,34 @@ def compute_yoy_qoq(db_path: str | Path, city: str | int | None = None) -> dict:
     overall: dict[QuarterKey, dict] = {}
     by_city: dict[str, dict[QuarterKey, dict]] = {}
     by_direction: dict[str, dict[QuarterKey, dict]] = {}
+    # P2 平台拆分（Week 4 步骤三）：每维度再按平台平行聚合，
+    # 供 by_platform 子结构输出（"BOSS"→"boss"、"JOBUI"→"jobui"）
+    overall_pf: dict[str, dict[QuarterKey, dict]] = {}
+    by_city_pf: dict[str, dict[str, dict[QuarterKey, dict]]] = {}
+    by_direction_pf: dict[str, dict[str, dict[QuarterKey, dict]]] = {}
     unattributed = 0
+
+    def _platform_key(platform: str | None) -> str:
+        return (platform or "boss").strip().lower()
 
     for row in rows:
         day = date.fromisoformat(row["snapshot_date"])
         key = get_quarter_of(day)
+        pf = _platform_key(row["platform"])
         _add(overall, key, row)
-        city_name = row["city_name"] or f"city_{row['city_id']}"
+        _add(overall_pf.setdefault(pf, {}), key, row)
+        # P3-4 修复：city_name 与 city_id 同时缺失时不再产出字面桶 "city_None"
+        city_name = row["city_name"] or (
+            f"city_{row['city_id']}" if row["city_id"] else "未知城市"
+        )
         _add(by_city.setdefault(city_name, {}), key, row)
+        _add(by_city_pf.setdefault(city_name, {}).setdefault(pf, {}), key, row)
         direction = _attribute_direction(row["job_name"], keyword_map)
         if direction is None:
             unattributed += 1
         else:
             _add(by_direction.setdefault(direction, {}), key, row)
+            _add(by_direction_pf.setdefault(direction, {}).setdefault(pf, {}), key, row)
 
     if not overall:
         return {
@@ -231,12 +254,55 @@ def compute_yoy_qoq(db_path: str | Path, city: str | int | None = None) -> dict:
         }
 
     current = max(overall.keys())
+
+    def _pf_stats(pfs: dict[str, dict[QuarterKey, dict]]) -> dict[str, dict]:
+        """平台桶 → 本季 {平台: {"job_count", "avg_salary"}}（按平台名排序）。
+
+        平台在该维度无数据（如纯 BOSS 库里的 jobui）不出现在结果里，
+        由报告层按 0 / None 兜底展示。
+        """
+        stats: dict[str, dict] = {}
+        for p, b in sorted(pfs.items()):
+            cur = b.get(current, {"job_count": 0, "salary_sum": 0.0, "salary_n": 0})
+            stats[p] = {
+                "job_count": cur["job_count"],
+                "avg_salary": _avg_salary_mid(cur),
+            }
+        return stats
+
+    def _norm(v) -> str:
+        return "" if v is None else str(v)
+
+    # P2 跨平台去重 KPI：job_name+company_name+city_id 归一哈希（sha1）去重，
+    # 仅作报告层统计口径，不落库（组长裁决 2026-09-23）
+    total_unique_jobs = len({
+        hashlib.sha1(
+            f"{_norm(r['job_name'])}|{_norm(r['company_name'])}|{_norm(r['city_id'])}".encode()
+        ).hexdigest()
+        for r in rows
+        if get_quarter_of(date.fromisoformat(r["snapshot_date"])) == current
+    })
+
     return {
         "current_quarter": quarter_label(current),
-        "overall": _dimension_result(overall, current),
-        "by_city": {name: _dimension_result(b, current) for name, b in sorted(by_city.items())},
+        "overall": {
+            **_dimension_result(overall, current),
+            "total_unique_jobs": total_unique_jobs,
+            "by_platform": _pf_stats(overall_pf),
+        },
+        "by_city": {
+            name: {
+                **_dimension_result(b, current),
+                "by_platform": _pf_stats(by_city_pf.get(name, {})),
+            }
+            for name, b in sorted(by_city.items())
+        },
         "by_direction": {
-            d: _dimension_result(b, current) for d, b in sorted(by_direction.items())
+            d: {
+                **_dimension_result(b, current),
+                "by_platform": _pf_stats(by_direction_pf.get(d, {})),
+            }
+            for d, b in sorted(by_direction.items())
         },
         "unattributed": unattributed,
     }

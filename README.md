@@ -15,7 +15,7 @@
 | Week 1 — 架构 + 预研 | ✅ 完成（5 份架构文档 + BOSS 爬虫预研 60 条样本） |
 | Week 2 — 采集管线（v1.1 CDP 方案） | ✅ 完成（scraper CLI wrapper + JSON importer + schema/迁移 + 89 个测试） |
 | Week 3 — 数据分析 | ✅ 完成（同比/环比 + JD 词频 + HTML 单文件报告，102 个测试） |
-| Week 4 — 跨平台 + 报告 | 🔄 进行中（步骤二完成：职友集采集管线 + migration 0002，149 个测试；步骤三 --compare 待启动） |
+| Week 4 — 跨平台 + 报告 | ✅ 完成（步骤二：职友集采集管线 + migration 0002；步骤三：--compare 双平台对比报告 + P2 平台拆分 + 5 项 P3 修复，167 个测试） |
 | Week 5 — 自动化 | 待启动 |
 
 ## 技术栈
@@ -83,9 +83,21 @@ analyze_keywords("data/recruitment.db", top_n=50)
 python -m analysis.report data/recruitment.db report.html
 ```
 
+```bash
+# 双平台对比模式：KPI 卡片分平台独立统计 + 跨平台唯一岗位数，
+# 薪资趋势图双平台叠放（BOSS 实线 / JOBUI 虚线），默认输出 compare_report.html
+python -m analysis.report --compare data/recruitment.db
+```
+
 > 报告内嵌 plotly.js（仅首个图表内嵌一次），单文件可直接离线打开。
 > 日薪岗位（`salary_unit='day'`）不计入薪资均值；方向归属为
 > job_name 关键词启发式，未匹配岗位计入 `unattributed`。
+>
+> **跨平台口径（Week 4 步骤三裁决）**：`compute_yoy_qoq` 三维度各带 `by_platform`
+> 子结构（job_count / avg_salary 分平台统计），`overall` 另含 `total_unique_jobs`
+> （本季，按 岗位名+公司+城市 归一 sha1 哈希跨平台去重，仅报告层口径、不落库）。
+> 普通模式保持 Week 3 行为，报告头提示「含 N 个 JOBUI 聚合条目，
+> 请参考 --compare 模式跨平台对比」；双平台重叠请勿直接相加。
 
 ## 职友集采集（Week 4）
 
@@ -108,7 +120,8 @@ python3 scripts/jobui_cdp_raw.py --keyword "后端" --city "北京" \
 #    薪资统一换算 K 落库与 BOSS 同口径；城市未匹配时 city_id 置 NULL 不丢记录）
 python -m importers.jobui_importer data/raw/jobui_jobs_*.json --db data/recruitment.db
 
-# 批量：经 wrapper（相邻组合间 sleep uniform(5,10)s 限速）
+# 批量：经 wrapper（相邻组合间 sleep max(batch_delay_sec, uniform(5,10))s 限速——
+#    JOBUI 批次该配置值仅作开关/下限：0 = 测试模式不等待，>0 时至少随机等 5-10 秒）
 python3 -c "
 from core.config import Settings
 from collectors.jobui_scraper import JobuiScraperConfig, run_scraper, run_scraper_batch

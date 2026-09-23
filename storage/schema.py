@@ -32,11 +32,61 @@ def create_tables(conn: sqlite3.Connection) -> None:
     apply_pending_migrations(conn)
 
 
+#: 匹配迁移语句里的 ALTER TABLE ... ADD COLUMN <列名>（幂等检查用）
+_ADD_COLUMN_RE = re.compile(
+    r"^ALTER\s+TABLE\s+(?P<table>\"[^\"]+\"|\w+)\s+ADD\s+COLUMN\s+(?P<column>\"[^\"]+\"|\w+)",
+    re.IGNORECASE,
+)
+
+
+def _migration_statements(sql: str) -> list[str]:
+    """迁移 SQL → 语句列表（按分号拆分，跳过整行 -- 注释）。
+
+    本仓库迁移为简单风格：整行注释 + 分号结尾语句，无内联注释 / 触发器，
+    拆分规则与之一一对应。
+    """
+    stmts: list[str] = []
+    buf: list[str] = []
+    for line in sql.splitlines():
+        if line.strip().startswith("--"):
+            continue
+        buf.append(line)
+        if line.rstrip().endswith(";"):
+            stmt = "\n".join(buf).strip().rstrip(";").strip()
+            if stmt:
+                stmts.append(stmt)
+            buf = []
+    tail = "\n".join(buf).strip().rstrip(";").strip()
+    if tail:
+        stmts.append(tail)
+    return stmts
+
+
+def apply_migration_script(conn: sqlite3.Connection, sql: str) -> None:
+    """逐语句执行一段迁移 SQL，幂等且不留半迁移状态（P3-5 修复）。
+
+    - ALTER ADD COLUMN 语句执行前先 PRAGMA table_info 检查，列已存在 → 跳过
+      （关闭「两条 ALTER 之间中断 → 重跑报 duplicate column」的半迁移窗口）；
+    - 整段包在事务里：任一语句失败整体回滚，不会留下列已加、版本未记的中间态。
+    """
+    with transaction(conn):
+        for stmt in _migration_statements(sql):
+            m = _ADD_COLUMN_RE.match(stmt)
+            if m:
+                table = m.group("table").strip('"')
+                column = m.group("column").strip('"')
+                existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                if column in existing:
+                    continue
+            conn.execute(stmt)
+
+
 def apply_pending_migrations(conn: sqlite3.Connection) -> None:
     """按版本号顺序执行 0001 之后的迁移。
 
     schema_version 表记录已应用版本，重复执行自动跳过（幂等）。
     0001 为初始建表（含自身版本记录），不走本函数。
+    实际执行交给 apply_migration_script（列存在跳过 + 事务包裹）。
     """
     applied = {int(row[0]) for row in conn.execute("SELECT version FROM schema_version")}
     for path in sorted(MIGRATION_DIR.glob("*.sql")):
@@ -46,7 +96,7 @@ def apply_pending_migrations(conn: sqlite3.Connection) -> None:
         version = int(m.group(1))
         if version <= 1 or version in applied:
             continue
-        conn.executescript(path.read_text(encoding="utf-8"))
+        apply_migration_script(conn, path.read_text(encoding="utf-8"))
 
 
 def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> Path:

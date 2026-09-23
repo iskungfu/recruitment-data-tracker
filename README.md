@@ -167,7 +167,9 @@ python -m data.publish.format_check data/publish/v1
   `get_quarter_of` / `quarter_label`）；方向归属启发式与 `analysis.stats` 同口径平行实现
 - `chart_specs` 字段为 Plotly.js 直接可用的 `{type, data, layout}`，网站 `Plotly.react()` 渲染
 - 空库降级：只建表无岗位时仍输出合法 JSON（数值 0 / null、结构保留），format_check 全过
-- CDN 基础路径：`https://cdn.jsdelivr.net/gh/iskungfu/recruitment-data-tracker@data/publish/v1/`
+- CDN 基础路径：`https://cdn.jsdelivr.net/gh/iskungfu/recruitment-data-tracker@data/data/publish/v1/`
+  （`@data` 为发布分支名、其后 `data/` 为仓库内目录——data 分支与 develop 同树，
+  故路径含两段 data；降级源：`https://raw.githubusercontent.com/iskungfu/recruitment-data-tracker/data/data/publish/v1/`）
 - 季度提醒：定时任务「季度采集提醒」（每季度首月 1 号 9:00 飞书提醒执行季度发布）
 
 ## 架构文档

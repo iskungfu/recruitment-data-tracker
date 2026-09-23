@@ -24,8 +24,16 @@
 - **用户裁决（2026-09-23，PRD §3.1）**：前端方向保持 3 个关键词（前端/Vue/React），keywords 种子数据定为 34 行；删除曾补入的 `('前端', 'JavaScript')`，SQL / ERD / ADR / 配置 / README / 测试断言同步回退为 34
 - 架构文档 v1.2：`03-module-interfaces.md` 替换为 v1.2 版——§6 CLI 入口对齐 boss-zhipin-scraper 上游真实命令（`scripts/boss_cdp_raw.py --pages`），§7 字段映射表对齐 scraper 真实 JSON 输出 key（三格式兼容兜底）；§14 验收口径同步为 keywords 34 行
 - ERD §4 容量估算同步：keywords 34 行、snapshots 单季度 170 行、一年累积 680 行
+- README：Week 3 状态 + 数据分析使用说明
+
+### Added (Week 3 — 数据分析)
+- `analysis/stats.py` 新增 `compute_yoy_qoq(db_path, city=None)`：overall / by_city / by_direction 三维度同比+环比（复用 `get_quarter_of` / `_ratio`，分母 NULL/0 → NULL）；日薪岗位（`salary_unit='day'`）不计入薪资均值；月薪均值取 (min+max)/2 中点；方向归属为启发式（job_name 含关键词 → 该关键词方向，未匹配计入 `unattributed` 字段）
+- `analysis/keywords.py` 新增 `analyze_keywords(db_path, top_n=50)`：jieba 分词 + 单字/标点/停用词过滤，频次并列时按词字典序排序（确定性输出）
+- `analysis/report.py` 新增 `generate_report(db_path, city=None) -> str`：KPI 卡片（总岗位 / 5 城排名 / 当季均薪）+ 5 类图表（多城市薪资趋势线图、方向薪资分组柱状图、JD 高频词横向柱状图、学历/经验分布饼图）；`string.Template` + Plotly `to_html` 单文件输出（plotly.js 仅首个图表内嵌，~4.5MB，无外部 `<script src>`）；CLI：`python -m analysis.report [db_path] [output]`，默认 `data/recruitment.db` → `report.html`
+- `tests/test_analysis.py`：13 个测试（同比环比数值/日薪排除/城市过滤/空分母、词频 top_n/停用词/单字过滤、报告生成/CLI 入口/空库），含 `test_pie_values_are_counts` 回归锁
+- 依赖正式化：jieba / plotly 写入 pyproject dependencies（原为注释占位）
+- 修复（浏览器渲染验证发现）：饼图曾误传标签列表为频次（`values=list(dist)` → `values=list(dist.values())`），已修复并加回归测试
 
 ### Planned
-- Week 3：同比分析 + 关键词词云 + HTML 报告
 - Week 4：职友集采集 + 跨平台对比
 - Week 5：cron 自动化 + CI 健康检查

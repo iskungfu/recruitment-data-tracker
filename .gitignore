@@ -29,9 +29,13 @@ config/local/cookies.json
 config/local/*.json
 
 # 数据与运行时文件
-data/recruitment.db
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/report.html
 data/reports/
 data/logs/
+.preview/
 
 # 环境变量
 .env

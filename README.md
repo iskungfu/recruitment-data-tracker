@@ -14,7 +14,7 @@
 |------|------|
 | Week 1 — 架构 + 预研 | ✅ 完成（5 份架构文档 + BOSS 爬虫预研 60 条样本） |
 | Week 2 — 采集管线（v1.1 CDP 方案） | ✅ 完成（scraper CLI wrapper + JSON importer + schema/迁移 + 89 个测试） |
-| Week 3 — 数据分析 | 待启动 |
+| Week 3 — 数据分析 | ✅ 完成（同比/环比 + JD 词频 + HTML 单文件报告，102 个测试） |
 | Week 4 — 跨平台 + 报告 | 待启动 |
 | Week 5 — 自动化 | 待启动 |
 
@@ -65,6 +65,27 @@ pytest
 
 > 注意：采集依赖本机 Chrome（CDP 9222 端口被动监听 joblist.json，不发主动请求）。
 > 子进程超时 300s，异常抛 `ScraperError` / `ScraperTimeoutError`。
+
+## 数据分析与报告（Week 3）
+
+```python
+# 同比/环比：overall / by_city / by_direction 三维度，分母 NULL/0 返回 None
+from analysis.stats import compute_yoy_qoq
+compute_yoy_qoq("data/recruitment.db", city="北京")
+
+# JD 高频词（jieba 分词，过滤单字/标点/停用词）
+from analysis.keywords import analyze_keywords
+analyze_keywords("data/recruitment.db", top_n=50)
+```
+
+```bash
+# 生成单文件 HTML 报告（KPI 卡片 + 趋势/方向/高频词/学历/经验 5 类图表）
+python -m analysis.report data/recruitment.db report.html
+```
+
+> 报告内嵌 plotly.js（仅首个图表内嵌一次），单文件可直接离线打开。
+> 日薪岗位（`salary_unit='day'`）不计入薪资均值；方向归属为
+> job_name 关键词启发式，未匹配岗位计入 `unattributed`。
 
 ## 架构文档
 

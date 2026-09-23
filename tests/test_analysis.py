@@ -192,3 +192,24 @@ class TestReport:
         conn.close()
         out = generate_report(db, output_path=tmp_path / "empty.html")
         assert Path(out).stat().st_size > 1024
+
+
+    def test_missing_db_no_side_effect(self, tmp_path):
+        """P2 修复：DB 不存在 → FileNotFoundError，且不静默创建空文件
+
+        三个入口（compute_yoy_qoq / analyze_keywords / generate_report）
+        统一校验，任何一个都不应留下空 db 文件副作用。
+        """
+        missing = tmp_path / "no_such_dir" / "missing.db"
+        with pytest.raises(FileNotFoundError):
+            compute_yoy_qoq(missing)
+        assert not missing.exists()
+
+        with pytest.raises(FileNotFoundError):
+            analyze_keywords(missing)
+        assert not missing.exists()
+
+        with pytest.raises(FileNotFoundError):
+            generate_report(missing, output_path=tmp_path / "x.html")
+        assert not missing.exists()
+        assert not (tmp_path / "x.html").exists()

@@ -312,7 +312,13 @@ def generate_report(
     （分城市）、方向薪资分组柱状、JD 高频词条形图、学历/经验分布饼图、
     方向同比环比明细表。city 过滤口径与 compute_yoy_qoq 一致；
     日薪/时薪岗位不参与所有薪资均值。
+
+    Raises:
+        FileNotFoundError: db_path 不存在时抛出（不静默创建空库文件）。
     """
+    db_path = Path(db_path)
+    if not db_path.exists():
+        raise FileNotFoundError(f"数据库文件不存在: {db_path}")
     yoy = compute_yoy_qoq(db_path, city)
     conn = _connect(db_path)
     try:
@@ -385,7 +391,11 @@ def main() -> None:
 
     db = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/recruitment.db")
     out = Path(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_OUTPUT
-    path = generate_report(db, output_path=out)
+    try:
+        path = generate_report(db, output_path=out)
+    except FileNotFoundError as e:
+        print(f"错误: {e}", file=sys.stderr)
+        sys.exit(1)
     size = Path(path).stat().st_size
     print(f"报告已生成: {path} ({size} bytes)")
 

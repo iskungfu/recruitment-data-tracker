@@ -152,7 +152,13 @@ def compute_yoy_qoq(db_path: str | Path, city: str | int | None = None) -> dict:
                      "yoy": {"job_count", "avg_salary"}}
         分母缺失或为 0 → 对应百分比为 None。avg_salary 只计月薪岗
         （salary_unit='month'），取 (salary_min+salary_max)/2 的均值。
+
+    Raises:
+        FileNotFoundError: db_path 不存在时抛出（不静默创建空库文件）。
     """
+    db_path = Path(db_path)
+    if not db_path.exists():
+        raise FileNotFoundError(f"数据库文件不存在: {db_path}")
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:

@@ -62,7 +62,13 @@ def analyze_keywords(db_path: str | Path, top_n: int = 50) -> list[tuple[str, in
     过滤规则：单字、停用词（的/了/在/是/和/与/及/或/等 等）、
     纯标点与纯数字。结果确定性：同频次按词面字典序（Counter.most_common
     不保证次序稳定，这里显式排序）。
+
+    Raises:
+        FileNotFoundError: db_path 不存在时抛出（不静默创建空库文件）。
     """
+    db_path = Path(db_path)
+    if not db_path.exists():
+        raise FileNotFoundError(f"数据库文件不存在: {db_path}")
     counter: Counter[str] = Counter()
     for jd in _iter_jd_texts(db_path):
         counter.update(tokenize(jd))

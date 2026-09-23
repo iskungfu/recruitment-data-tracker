@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -19,12 +20,33 @@ DEFAULT_DB_PATH = Path("data/recruitment.db")
 
 EXPECTED_TABLES = ("schema_version", "cities", "keywords", "snapshots", "job_snapshot")
 
+_VERSION_RE = re.compile(r"^(\d+)_")
+
 
 def create_tables(conn: sqlite3.Connection) -> None:
-    """执行初始迁移（DDL + 种子数据，全部 INSERT OR IGNORE，可重复执行）"""
+    """执行初始迁移（DDL + 种子数据，全部 INSERT OR IGNORE，可重复执行），
+    再按版本号补执行后续迁移（0002+）"""
     sql = INITIAL_MIGRATION.read_text(encoding="utf-8")
     with transaction(conn):
         conn.executescript(sql)
+    apply_pending_migrations(conn)
+
+
+def apply_pending_migrations(conn: sqlite3.Connection) -> None:
+    """按版本号顺序执行 0001 之后的迁移。
+
+    schema_version 表记录已应用版本，重复执行自动跳过（幂等）。
+    0001 为初始建表（含自身版本记录），不走本函数。
+    """
+    applied = {int(row[0]) for row in conn.execute("SELECT version FROM schema_version")}
+    for path in sorted(MIGRATION_DIR.glob("*.sql")):
+        m = _VERSION_RE.match(path.name)
+        if not m:
+            continue
+        version = int(m.group(1))
+        if version <= 1 or version in applied:
+            continue
+        conn.executescript(path.read_text(encoding="utf-8"))
 
 
 def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> Path:

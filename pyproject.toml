@@ -13,6 +13,9 @@ dependencies = [
     "plotly>=5.18",
     # 采集层：boss-zhipin-scraper 为外部 CLI 依赖（ADR-015），
     # 不作为 Python 包引入，通过 subprocess 调用，见 collectors/boss_scraper.py
+    # 采集层（Week 4）：职友集列表页 DOM 解析用 lxml；
+    # scripts/jobui_cdp_raw.py 的 playwright 为可选运行时依赖（不在测试路径）
+    "lxml>=4.9",
 ]
 
 [project.optional-dependencies]

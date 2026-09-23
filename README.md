@@ -15,7 +15,7 @@
 | Week 1 — 架构 + 预研 | ✅ 完成（5 份架构文档 + BOSS 爬虫预研 60 条样本） |
 | Week 2 — 采集管线（v1.1 CDP 方案） | ✅ 完成（scraper CLI wrapper + JSON importer + schema/迁移 + 89 个测试） |
 | Week 3 — 数据分析 | ✅ 完成（同比/环比 + JD 词频 + HTML 单文件报告，102 个测试） |
-| Week 4 — 跨平台 + 报告 | 待启动 |
+| Week 4 — 跨平台 + 报告 | 🔄 进行中（步骤二完成：职友集采集管线 + migration 0002，149 个测试；步骤三 --compare 待启动） |
 | Week 5 — 自动化 | 待启动 |
 
 ## 技术栈
@@ -86,6 +86,46 @@ python -m analysis.report data/recruitment.db report.html
 > 报告内嵌 plotly.js（仅首个图表内嵌一次），单文件可直接离线打开。
 > 日薪岗位（`salary_unit='day'`）不计入薪资均值；方向归属为
 > job_name 关键词启发式，未匹配岗位计入 `unattributed`。
+
+## 职友集采集（Week 4）
+
+跨平台对比的第二数据源为职友集（jobui.com）。与 BOSS 不同，职友集没有现成外部 CLI，
+采集脚本为我们自己的 `scripts/jobui_cdp_raw.py`（CDP 被动优先：连接本机 Chrome，
+复用真实浏览器指纹，不自建请求）。
+
+```bash
+# 0. 依赖：pip install lxml playwright（lxml 为 DOM 解析必装；playwright 仅采集脚本需要）
+
+# 1. 启动带 CDP 的本机 Chrome
+chrome --remote-debugging-port=9222
+
+# 2. 单组合采集（表单流：入口页 → 输入关键词 → 带 Referer 跳转，匿名免登录；
+#    首版只采第 1 页，每页 20 条）
+python3 scripts/jobui_cdp_raw.py --keyword "后端" --city "北京" \
+    --pages 1 --format json --output data/raw/jobui_jobs_北京_后端.json --cdp-port 9222
+
+# 3. 入库（自动应用 migration 0002 补 source_platform/source_url 列；
+#    薪资统一换算 K 落库与 BOSS 同口径；城市未匹配时 city_id 置 NULL 不丢记录）
+python -m importers.jobui_importer data/raw/jobui_jobs_*.json --db data/recruitment.db
+
+# 批量：经 wrapper（相邻组合间 sleep uniform(5,10)s 限速）
+python3 -c "
+from core.config import Settings
+from collectors.jobui_scraper import JobuiScraperConfig, run_scraper, run_scraper_batch
+settings = Settings()
+run_scraper_batch(['后端', 'Java'], ['北京', '上海'], settings)   # 失败组合跳过不中断
+"
+```
+
+字段映射口径（2026-09-23 组长裁决）：薪资统一换算 **K** 落库（元 ÷1000 / K ×1 / 万 ×10；
+"面议"→NULL；"XX以上"→仅 salary_min；日薪→`salary_unit='day'`、min/max NULL；
+默认 `year_multiplier=12`）；学历/经验/公司名**原文照存**（"本科以上"≠"本科"）；
+`encrypt_job_id = jobui_<jobID>`；新增 `source_platform`（域名）/ `source_url`（详情页 URL）
+两列（migration 0002）；`jd_fulltext` 统一 NULL（职友集详情页为跳转页，无 JD 正文）。
+
+反爬：直接访问搜索 URL（无 Referer）会撞登录墙 → 必须走表单流；高频访问触发
+IP 级图片验证码（约 10-15 分钟自动解封）；登录墙/验证码分别映射
+`JobuiLoginRequiredError` / `JobuiCaptchaError`（wrapper 按脚本退出码 2/3 映射）。
 
 ## 架构文档
 

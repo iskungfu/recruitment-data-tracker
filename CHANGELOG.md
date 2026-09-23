@@ -34,6 +34,15 @@
 - 依赖正式化：jieba / plotly 写入 pyproject dependencies（原为注释占位）
 - 修复（浏览器渲染验证发现）：饼图曾误传标签列表为频次（`values=list(dist)` → `values=list(dist.values())`），已修复并加回归测试
 
+### Added (Week 4 — 职友集采集管线，步骤二)
+- `collectors/jobui_scraper.py`：职友集 CDP 采集 wrapper，对齐 boss_scraper 三函数契约（`check_jobui_scraper_installed` / `run_scraper` / `run_scraper_batch`）；批次内相邻搜索 `sleep uniform(5, 10)` 限速（`batch_delay_sec=0` 为测试模式不等待）；登录墙/验证码按脚本退出码 2/3 映射为 `JobuiLoginRequiredError` / `JobuiCaptchaError`；`check_final_url` / `build_search_url` / `parse_list_html`（lxml DOM 解析，真实页面含无字段占位卡时跳过）
+- `scripts/jobui_cdp_raw.py`：职友集采集脚本（playwright `connect_over_cdp` 连本机 Chrome，表单流匿名免登录——入口页→输入 jobKw→同域带 Referer 跳转；首版只采第 1 页 20 条，第 2 页起匿名触发登录弹窗）
+- `importers/jobui_importer.py`：JSON→SQLite，复用 boss_importer 框架（read_scraper_json + dedup + INSERT OR IGNORE）；字段口径按组长裁决：薪资统一换算 **K** 落库（元÷1000/K×1/万×10；面议→NULL；XX以上→仅 salary_min；日薪→day+NULL；默认 month+year_multiplier=12）——追裁决 (a) 对齐 `core/salary.py` 冻结契约 K/月，跨平台对比同口径；学历/经验/公司名原文照存；城市未匹配→city_id NULL 不丢记录；`jd_fulltext` 统一 NULL（详情页为跳转页）；CLI `python -m importers.jobui_importer`（缺失 DB 友好报错，对齐 P2 口径）
+- `storage/migrations/0002_jobui_source.sql` + `storage/schema.py` 迁移循环：job_snapshot 新增 `source_platform`（来源域名）/ `source_url`（详情页 URL）列；`apply_pending_migrations` 按 schema_version 版本号顺序执行 0002+，幂等；旧库首次经 jobui importer 入库时自动补列（`ensure_source_columns`）
+- `tests/`：46 个新测试——DOM 解析用 2026-09-23 预研真实捕获 HTML 切片（`tests/fixtures/jobui_list_sample.html`，20 有效卡+3 占位卡）；薪资换算覆盖裁决五类+真实样本补充格式（裸数字/万/大写K/万以上）；学历原文（"本科以上"≠"本科"）；来源站列写入；登录墙/验证码 URL 检测与退出码映射；仿真 CLI 复刻 wrapper 契约不依赖 Chrome/网络；migration 幂等与旧库自动补列；BOSS/JOBUI 同表 K 口径混合入库验证（跨平台对比前提）
+- 依赖：`lxml>=4.9` 写入 pyproject dependencies（playwright 为采集脚本可选运行时依赖，不进测试路径）
+- 实测：`python -m storage.schema` → `python -m importers.jobui_importer`（真实样本 20 条）端到端跑通；149 个测试全绿（旧 103 + 新 46）
+
 ### Planned
 - Week 4：职友集采集 + 跨平台对比
 - Week 5：cron 自动化 + CI 健康检查

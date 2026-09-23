@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed (Week 6 — 发布脚本速修)
+- `scripts/quarterly_publish.sh`：P2 修复——`python -m tracker collect || true` 引用了不存在的 `tracker` 模块，每次静默跳过采集；改为先用 `importlib.import_module('tracker')` 探测，模块存在才采集，否则打印警告后继续发布现有库数据（当前版本采集需手动执行，README 已注明）
+- 同脚本 P3 修复：提交推送改为 `git diff --cached --quiet || git commit ... && git push origin HEAD:data`，无变更时跳过 commit 不再误报失败（已实测两种路径）
+
 ### Added (Week 1 — 架构基线)
 - 架构概览：模块边界、端到端数据流、NFR 落点
 - 数据库 ERD：4 表（snapshots / keywords / cities / job_snapshot）+ DDL + 种子数据

@@ -149,7 +149,9 @@ IP 级图片验证码（约 10-15 分钟自动解封）；登录墙/验证码分
 展示在云端静态页）。
 
 ```bash
-# 一键季度发布：采集（失败不阻断）→ 生成 6 个 JSON → 推送 data 分支
+# 一键季度发布：采集（tracker 模块未实现则跳过）→ 生成 6 个 JSON → 推送 data 分支
+# 注意：当前版本一键脚本不含采集（tracker 模块待后续实现），采集需手动执行；
+#       脚本会直接发布现有库数据，并在跳过采集时打印警告。
 bash scripts/quarterly_publish.sh
 
 # 或只跑发布（默认 data/recruitment.db → data/publish/v1/）

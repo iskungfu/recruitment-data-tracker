@@ -18,6 +18,7 @@
 | Week 4 — 跨平台 + 报告 | ✅ 完成（步骤二：职友集采集管线 + migration 0002；步骤三：--compare 双平台对比报告 + P2 平台拆分 + 5 项 P3 修复，167 个测试） |
 | Week 5 — 自动化 | ✅ 完成（每周一 9:00 定时任务「招聘数据周报」自动生成 --compare 报告并上传飞书云盘；P3 去重哈希 casefold 修复，168 个测试） |
 | Week 6 — 发布管线 + 网站 | ✅ 完成（`data/publish/` 发布管线：SQLite → 6 个 JSON → GitHub `data` 分支 → jsDelivr CDN → 静态网站；季度采集提醒 cron；176 个测试） |
+| Week 6 — 并发采集 | ✅ 完成（`scripts/boss_cdp_raw.py` 新增 `--keywords` 并发模式：ThreadPoolExecutor 4-10 worker + 全局 encrypt_job_id 去重 + tqdm 进度 + 登录墙全员收尾；181 个测试） |
 
 ## 技术栈
 
@@ -66,6 +67,25 @@ pytest
 
 > 注意：采集依赖本机 Chrome（CDP 9222 端口被动监听 joblist.json，不发主动请求）。
 > 子进程超时 300s，异常抛 `ScraperError` / `ScraperTimeoutError`。
+
+## 多关键词并发采集（Week 6）
+
+`scripts/boss_cdp_raw.py` 新增 `--keywords` 并发模式（本仓库已内置改造版，
+也可整体覆盖外部 boss-zhipin-scraper 克隆里的同名脚本，单 `--keyword` 用法完全兼容）：
+
+```cmd
+REM 并发模式：北京 22 个 CS 关键词，6 个 worker
+python scripts\boss_cdp_raw.py --keywords "后端,前端,算法工程师,测试开发,数据分析,架构师,AI Agent,大模型,推荐系统,云计算,安全,运维,芯片设计,芯片验证,FPGA,集成电路,模拟IC,数字IC,射频,半导体工艺,EDA,嵌入式" --city "北京" --pages 3 --workers 6 --output data\raw\beijing_cs_semi.json
+```
+
+- `--workers` 默认 6，范围 4-10（超出自动钳制）；同一 worker 连续搜索间隔 uniform(3,7)s
+- 每个 worker 独立 CDP 会话 + 独立 page（`scrape_list` 内部自建，线程天然隔离）
+- 合并结果按 `encrypt_job_id` 全局去重（不同关键词可能搜出同一岗位），单文件输出
+- tqdm 进度条实时显示各 worker 当前关键词；任一 worker 遇到登录墙/验证码，
+  全员在当前关键词边界优雅收尾并以退出码 1 退出
+- 每关键词同时落盘到 `<输出名>_parts/`（异常中断也保留已抓部分）
+- 并发模式当前只做列表采集（等价 `--no-detail`），不支持 `--merge` / `--input`
+- 依赖 `pip install tqdm`（未装时进度条自动降级为无，不影响功能）
 
 ## 数据分析与报告（Week 3）
 

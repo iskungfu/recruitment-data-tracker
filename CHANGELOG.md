@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added (Week 6 — 并发采集)
+- `scripts/boss_cdp_raw.py` 入仓（源自外部 boss-zhipin-scraper v2.2，随 Week 1 预研克隆）并新增 `--keywords` / `--keywords-file` / `--workers` 并发模式：`ThreadPoolExecutor` 4-10 worker（默认 6，超出自动钳制），每 worker 独立 CDP 会话 + page（复用 `scrape_list` 既有结构，不改其签名），同一 worker 连续搜索间隔 uniform(3,7)s，tqdm 进度条实时显示各 worker 当前关键词，合并结果按 `encrypt_job_id` 全局去重后单文件输出，每关键词增量落盘 `<输出名>_parts/`
+- 登录墙/验证码（`LoginGateError`）：任一 worker 命中即 stop_event 通知全员在当前关键词边界优雅收尾，主线程重抛并以退出码 1 退出；单关键词其他异常记 `error` 字段不拖垮整体
+- 并发模式仅列表采集（等价 `--no-detail`），不支持 `--merge` / `--input`；单 `--keyword` 模式完全向后兼容
+- `data/city_codes.json` 入仓（11K 城市码表，仓库内运行可离线解析城市）
+- `tests/test_concurrent_scraper.py` 5 个测试（关键词解析/文件读取、跨 worker 去重、登录墙传播不挂死、单点失败隔离），全仓 181 测试全绿
+- 与派发的偏差说明：派发要求「worker 复用同一 page 搜下一个关键词」，实现改为每关键词独立 page——`scrape_list` 内部自建/自毁会话，改造复用需动其签名与清理逻辑，风险大于收益；每关键词新 tab 开销 <1s 且更贴近真人行为
+
 ### Fixed (Week 6 — 发布脚本速修)
 - `scripts/quarterly_publish.sh`：P2 修复——`python -m tracker collect || true` 引用了不存在的 `tracker` 模块，每次静默跳过采集；改为先用 `importlib.import_module('tracker')` 探测，模块存在才采集，否则打印警告后继续发布现有库数据（当前版本采集需手动执行，README 已注明）
 - 同脚本 P3 修复：提交推送改为 `git diff --cached --quiet || git commit ... && git push origin HEAD:data`，无变更时跳过 commit 不再误报失败（已实测两种路径）
